@@ -86,6 +86,10 @@ class GymmaWrapper(MultiAgentEnv):
         actions = [int(a) for a in actions]
         obs, reward, done, truncated, self._info = self._env.step(actions)
         self._obs = self._pad_observation(obs)
+        # SELMA diagnostic: capture per-agent reward vector before scalarisation.
+        # Read-only; does not modify `reward` seen by the learner.
+        if isinstance(self._info, dict) and isinstance(reward, Iterable):
+            self._info["per_agent_reward"] = [float(r) for r in reward]
 
         if self.common_reward and isinstance(reward, Iterable):
             reward = float(self.reward_agg_fn(reward))
