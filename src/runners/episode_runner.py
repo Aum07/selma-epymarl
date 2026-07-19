@@ -77,6 +77,8 @@ class EpisodeRunner:
         # SELMA: per-agent episode return accumulator
         per_agent_ep = np.zeros(self.args.n_agents)
         per_agent_steps = 0
+        multi_agent_reward_steps = 0   # SELMA: steps where >=2 agents were rewarded together
+        single_agent_reward_steps = 0
 
         while not terminated:
             pre_transition_data = {
@@ -98,8 +100,14 @@ class EpisodeRunner:
             # SELMA: pop per-agent reward (also keeps env_info numeric for stats agg)
             _par = env_info.pop("per_agent_reward", None)
             if _par is not None:
-                per_agent_ep += np.asarray(_par, dtype=float)
+                _pa = np.asarray(_par, dtype=float)
+                per_agent_ep += _pa
                 per_agent_steps += 1
+                _nrew = int((_pa > 0).sum())
+                if _nrew >= 2:
+                    multi_agent_reward_steps += 1
+                elif _nrew == 1:
+                    single_agent_reward_steps += 1
             if test_mode and self.args.render:
                 self.env.render()
             episode_return += reward
@@ -143,6 +151,8 @@ class EpisodeRunner:
         )
         cur_stats["n_episodes"] = 1 + cur_stats.get("n_episodes", 0)
         cur_stats["ep_length"] = self.t + cur_stats.get("ep_length", 0)
+        cur_stats["multi_agent_reward_steps"] = cur_stats.get("multi_agent_reward_steps", 0) + multi_agent_reward_steps
+        cur_stats["single_agent_reward_steps"] = cur_stats.get("single_agent_reward_steps", 0) + single_agent_reward_steps
         for _i in range(self.args.n_agents):
             _k = f"agent{_i}_return"
             cur_stats[_k] = cur_stats.get(_k, 0) + float(per_agent_ep[_i])
@@ -153,7 +163,8 @@ class EpisodeRunner:
             with open(_f, 'a', newline='') as _fh:
                 _w = _csv.writer(_fh)
                 if _new:
-                    _w.writerow(['t_env','test_mode','ep_length','team_return'] +
+                    _w.writerow(['t_env','test_mode','ep_length','team_return',
+                                 'multi_agent_reward_steps','single_agent_reward_steps'] +
                                 [f'agent{j}_return' for j in range(self.args.n_agents)])
                 if per_agent_steps != self.t:
                     raise RuntimeError(
@@ -163,7 +174,8 @@ class EpisodeRunner:
                     raise AssertionError(
                         f"SELMA reward mismatch: team={_team} agents={per_agent_ep.sum()}")
                 _logged_t = self.t_env if test_mode else self.t_env + self.t
-                _w.writerow([_logged_t, int(test_mode), self.t, _team] +
+                _w.writerow([_logged_t, int(test_mode), self.t, _team,
+                             multi_agent_reward_steps, single_agent_reward_steps] +
                             [float(x) for x in per_agent_ep])
 
         if not test_mode:
