@@ -19,10 +19,10 @@ class Logger:
 
     def setup_tb(self, directory_name):
         # Import here so it doesn't have to be installed if you don't use it
-        from tensorboard_logger import configure, log_value
+        from torch.utils.tensorboard import SummaryWriter
 
-        configure(directory_name)
-        self.tb_logger = log_value
+        self.tb_writer = SummaryWriter(log_dir=directory_name)
+        self.tb_logger = lambda key, value, t: self.tb_writer.add_scalar(key, value, t)
         self.use_tb = True
 
         self.console_logger.info("*******************")
