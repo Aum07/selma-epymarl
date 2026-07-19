@@ -20,6 +20,7 @@ buffer_cpu_only: True # If true we won't keep all of the replay buffer in vram
 
 # --- Logging options ---
 use_tensorboard: False # Log results to tensorboard
+selma_log_csv: "" # SELMA: path for per-episode per-agent return CSV (empty = disabled)
 use_wandb: False # Log results to W&B
 wandb_team: null # W&B team name
 wandb_project: null # W&B project name

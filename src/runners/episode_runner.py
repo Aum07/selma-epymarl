@@ -74,6 +74,9 @@ class EpisodeRunner:
         else:
             episode_return = np.zeros(self.args.n_agents)
         self.mac.init_hidden(batch_size=self.batch_size)
+        # SELMA: per-agent episode return accumulator
+        per_agent_ep = np.zeros(self.args.n_agents)
+        per_agent_steps = 0
 
         while not terminated:
             pre_transition_data = {
@@ -92,6 +95,11 @@ class EpisodeRunner:
 
             _, reward, terminated, truncated, env_info = self.env.step(actions[0])
             terminated = terminated or truncated
+            # SELMA: pop per-agent reward (also keeps env_info numeric for stats agg)
+            _par = env_info.pop("per_agent_reward", None)
+            if _par is not None:
+                per_agent_ep += np.asarray(_par, dtype=float)
+                per_agent_steps += 1
             if test_mode and self.args.render:
                 self.env.render()
             episode_return += reward
@@ -135,6 +143,28 @@ class EpisodeRunner:
         )
         cur_stats["n_episodes"] = 1 + cur_stats.get("n_episodes", 0)
         cur_stats["ep_length"] = self.t + cur_stats.get("ep_length", 0)
+        for _i in range(self.args.n_agents):
+            _k = f"agent{_i}_return"
+            cur_stats[_k] = cur_stats.get(_k, 0) + float(per_agent_ep[_i])
+        if getattr(self.args, 'selma_log_csv', ''):
+            import os, csv as _csv
+            _f = self.args.selma_log_csv
+            _new = not os.path.exists(_f)
+            with open(_f, 'a', newline='') as _fh:
+                _w = _csv.writer(_fh)
+                if _new:
+                    _w.writerow(['t_env','test_mode','ep_length','team_return'] +
+                                [f'agent{j}_return' for j in range(self.args.n_agents)])
+                if per_agent_steps != self.t:
+                    raise RuntimeError(
+                        f"SELMA: captured {per_agent_steps} vectors for {self.t} steps")
+                _team = float(np.asarray(episode_return).sum())
+                if not np.isclose(_team, per_agent_ep.sum(), rtol=0.0, atol=1e-8):
+                    raise AssertionError(
+                        f"SELMA reward mismatch: team={_team} agents={per_agent_ep.sum()}")
+                _logged_t = self.t_env if test_mode else self.t_env + self.t
+                _w.writerow([_logged_t, int(test_mode), self.t, _team] +
+                            [float(x) for x in per_agent_ep])
 
         if not test_mode:
             self.t_env += self.t
