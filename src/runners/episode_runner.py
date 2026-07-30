@@ -6,6 +6,17 @@ from components.episode_buffer import EpisodeBatch
 from envs import REGISTRY as env_REGISTRY
 from envs import register_smac, register_smacv2
 
+# SELMA: LBF load-event diagnostic fields accumulated per episode (see envs/gymma.py).
+# Zero for non-LBF environments; the underlying computation is gated to lbforaging there.
+LBF_LOAD_EVENT_KEYS = (
+    "successful_load_events",
+    "solo_load_events",
+    "multi_agent_load_events",
+    "necessary_cooperative_load_events",
+    "failed_load_events",
+    "failed_load_attempts",
+)
+
 
 class EpisodeRunner:
     def __init__(self, args, logger):
@@ -62,8 +73,14 @@ class EpisodeRunner:
 
     def reset(self):
         self.batch = self.new_batch()
-        self.env.reset()
+        _, reset_info = self.env.reset()
         self.t = 0
+        # SELMA: LBF-only episode bound for successful_load_events (None elsewhere)
+        self._lbf_initial_food_count = (
+            reset_info.get("initial_food_count")
+            if isinstance(reset_info, dict)
+            else None
+        )
 
     def run(self, test_mode=False):
         self.reset()
@@ -79,6 +96,8 @@ class EpisodeRunner:
         per_agent_steps = 0
         multi_agent_reward_steps = 0   # SELMA: steps where >=2 agents were rewarded together
         single_agent_reward_steps = 0
+        # SELMA: per-episode LBF load-event accumulators (see envs/gymma.py)
+        load_event_totals = {k: 0 for k in LBF_LOAD_EVENT_KEYS}
 
         while not terminated:
             pre_transition_data = {
@@ -99,6 +118,10 @@ class EpisodeRunner:
             terminated = terminated or truncated
             # SELMA: pop per-agent reward (also keeps env_info numeric for stats agg)
             _par = env_info.pop("per_agent_reward", None)
+            # SELMA: pop LBF load-event fields (no-op / all-zero for non-LBF envs)
+            _step_loads = {k: env_info.pop(k, 0) for k in LBF_LOAD_EVENT_KEYS}
+            for _k in LBF_LOAD_EVENT_KEYS:
+                load_event_totals[_k] += _step_loads[_k]
             if _par is not None:
                 _pa = np.asarray(_par, dtype=float)
                 per_agent_ep += _pa
@@ -108,6 +131,14 @@ class EpisodeRunner:
                     multi_agent_reward_steps += 1
                 elif _nrew == 1:
                     single_agent_reward_steps += 1
+                # SELMA HARD invariant: a multi-agent load this step must show up as
+                # a multi-agent reward step (both derived from the same env.step call)
+                if _step_loads["multi_agent_load_events"] >= 1 and _nrew < 2:
+                    raise AssertionError(
+                        "SELMA LBF invariant violated: multi_agent_load_events="
+                        f"{_step_loads['multi_agent_load_events']} at step {self.t} "
+                        f"without a matching multi_agent_reward_step (nrew={_nrew})"
+                    )
             if test_mode and self.args.render:
                 self.env.render()
             episode_return += reward
@@ -124,6 +155,18 @@ class EpisodeRunner:
             self.batch.update(post_transition_data, ts=self.t)
 
             self.t += 1
+
+        # SELMA HARD invariant: an episode can't successfully load more food than
+        # it started with (each food cell can only be removed once).
+        if (
+            self._lbf_initial_food_count is not None
+            and load_event_totals["successful_load_events"] > self._lbf_initial_food_count
+        ):
+            raise AssertionError(
+                "SELMA LBF invariant violated: successful_load_events "
+                f"({load_event_totals['successful_load_events']}) exceeds initial "
+                f"food count ({self._lbf_initial_food_count}) for this episode"
+            )
 
         last_data = {
             "state": [self.env.get_state()],
@@ -153,6 +196,8 @@ class EpisodeRunner:
         cur_stats["ep_length"] = self.t + cur_stats.get("ep_length", 0)
         cur_stats["multi_agent_reward_steps"] = cur_stats.get("multi_agent_reward_steps", 0) + multi_agent_reward_steps
         cur_stats["single_agent_reward_steps"] = cur_stats.get("single_agent_reward_steps", 0) + single_agent_reward_steps
+        for _k in LBF_LOAD_EVENT_KEYS:
+            cur_stats[_k] = cur_stats.get(_k, 0) + load_event_totals[_k]
         for _i in range(self.args.n_agents):
             _k = f"agent{_i}_return"
             cur_stats[_k] = cur_stats.get(_k, 0) + float(per_agent_ep[_i])
@@ -165,7 +210,8 @@ class EpisodeRunner:
                 if _new:
                     _w.writerow(['t_env','test_mode','ep_length','team_return',
                                  'multi_agent_reward_steps','single_agent_reward_steps'] +
-                                [f'agent{j}_return' for j in range(self.args.n_agents)])
+                                [f'agent{j}_return' for j in range(self.args.n_agents)] +
+                                list(LBF_LOAD_EVENT_KEYS))
                 if per_agent_steps != self.t:
                     raise RuntimeError(
                         f"SELMA: captured {per_agent_steps} vectors for {self.t} steps")
@@ -176,7 +222,8 @@ class EpisodeRunner:
                 _logged_t = self.t_env if test_mode else self.t_env + self.t
                 _w.writerow([_logged_t, int(test_mode), self.t, _team,
                              multi_agent_reward_steps, single_agent_reward_steps] +
-                            [float(x) for x in per_agent_ep])
+                            [float(x) for x in per_agent_ep] +
+                            [load_event_totals[k] for k in LBF_LOAD_EVENT_KEYS])
 
         if not test_mode:
             self.t_env += self.t

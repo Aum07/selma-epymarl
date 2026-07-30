@@ -25,6 +25,96 @@ except ImportError:
     )
 
 
+# SELMA diagnostic: lbforaging (LBF) load-event instrumentation.
+# LOAD action index, per lbforaging.foraging.environment.Action.LOAD.value.
+# Fixed by lbforaging's Action enum (NONE=0, NORTH=1, SOUTH=2, WEST=3, EAST=4, LOAD=5).
+_LBF_LOAD_ACTION = 5
+
+
+def _lbf_is_orthogonally_adjacent(position, cell):
+    row, col = position
+    crow, ccol = cell
+    return abs(row - crow) + abs(col - ccol) == 1
+
+
+def lbf_load_diagnostics(pre_field, positions, levels, actions, post_field):
+    """SELMA diagnostic: derive LBF per-step load-event stats from a pre/post-step snapshot.
+
+    Pure function (no env access), so it can be exercised directly in tests.
+    `pre_field`/`post_field` are 2D arrays of food levels (0 = empty cell).
+    `positions`/`levels` are per-agent lists captured immediately before
+    env.step; `actions` are the (raw, unvalidated) actions submitted to
+    env.step. Read-only: does not consume randomness and does not affect
+    observations, rewards, or termination.
+    """
+    pre_field = np.asarray(pre_field)
+    post_field = np.asarray(post_field)
+    rows, cols = pre_field.shape
+
+    loaders = [i for i, a in enumerate(actions) if int(a) == _LBF_LOAD_ACTION]
+
+    removed = []  # (row, col, pre_level) for food cells cleared this step
+    persisted = []  # (row, col) for food cells that were present both before and after
+    for r in range(rows):
+        for c in range(cols):
+            pre_level = pre_field[r, c]
+            if pre_level <= 0:
+                continue
+            if post_field[r, c] == 0:
+                removed.append((r, c, int(pre_level)))
+            else:
+                persisted.append((r, c))
+
+    successful_load_events = 0
+    solo_load_events = 0
+    multi_agent_load_events = 0
+    necessary_cooperative_load_events = 0
+    for row, col, food_level in removed:
+        participants = [
+            i for i in loaders if _lbf_is_orthogonally_adjacent(positions[i], (row, col))
+        ]
+        successful_load_events += 1
+        if len(participants) <= 1:
+            solo_load_events += 1
+        else:
+            multi_agent_load_events += 1
+            if all(food_level > levels[i] for i in participants):
+                necessary_cooperative_load_events += 1
+
+    failed_load_events = 0
+    failed_load_attempts = 0
+    for row, col in persisted:
+        participants = [
+            i for i in loaders if _lbf_is_orthogonally_adjacent(positions[i], (row, col))
+        ]
+        if participants:
+            failed_load_events += 1
+            failed_load_attempts += len(participants)
+
+    if solo_load_events + multi_agent_load_events != successful_load_events:
+        raise AssertionError(
+            "SELMA LBF invariant violated: solo_load_events "
+            f"({solo_load_events}) + multi_agent_load_events "
+            f"({multi_agent_load_events}) != successful_load_events "
+            f"({successful_load_events})"
+        )
+    if necessary_cooperative_load_events > multi_agent_load_events:
+        raise AssertionError(
+            "SELMA LBF invariant violated: necessary_cooperative_load_events "
+            f"({necessary_cooperative_load_events}) > multi_agent_load_events "
+            f"({multi_agent_load_events})"
+        )
+
+    return {
+        "successful_load_events": successful_load_events,
+        "solo_load_events": solo_load_events,
+        "multi_agent_load_events": multi_agent_load_events,
+        "necessary_cooperative_load_events": necessary_cooperative_load_events,
+        "failed_load_events": failed_load_events,
+        "failed_load_attempts": failed_load_attempts,
+    }
+
+
 class GymmaWrapper(MultiAgentEnv):
     def __init__(
         self,
@@ -42,6 +132,12 @@ class GymmaWrapper(MultiAgentEnv):
 
         if pretrained_wrapper:
             self._env = getattr(pretrained, pretrained_wrapper)(self._env)
+
+        # SELMA diagnostic: gate LBF-specific load-event instrumentation to actual
+        # lbforaging environments; every other Gymma environment is untouched.
+        self._is_lbforaging = type(self._env.unwrapped).__module__.startswith(
+            "lbforaging"
+        )
 
         self.n_agents = self._env.unwrapped.n_agents
         self.episode_limit = time_limit
@@ -84,12 +180,36 @@ class GymmaWrapper(MultiAgentEnv):
     def step(self, actions):
         """Returns obss, reward, terminated, truncated, info"""
         actions = [int(a) for a in actions]
+
+        # SELMA diagnostic: snapshot LBF state immediately before env.step, so
+        # load events can be attributed using pre-step positions/levels/actions.
+        # Read-only; does not consume randomness or otherwise touch the env.
+        _lbf_pre = None
+        if self._is_lbforaging:
+            _unwrapped = self._env.unwrapped
+            _lbf_pre = {
+                "field": np.array(_unwrapped.field, copy=True),
+                "positions": [tuple(p.position) for p in _unwrapped.players],
+                "levels": [p.level for p in _unwrapped.players],
+            }
+
         obs, reward, done, truncated, self._info = self._env.step(actions)
         self._obs = self._pad_observation(obs)
         # SELMA diagnostic: capture per-agent reward vector before scalarisation.
         # Read-only; does not modify `reward` seen by the learner.
         if isinstance(self._info, dict) and isinstance(reward, Iterable):
             self._info["per_agent_reward"] = [float(r) for r in reward]
+
+        if _lbf_pre is not None and isinstance(self._info, dict):
+            self._info.update(
+                lbf_load_diagnostics(
+                    _lbf_pre["field"],
+                    _lbf_pre["positions"],
+                    _lbf_pre["levels"],
+                    actions,
+                    self._env.unwrapped.field,
+                )
+            )
 
         if self.common_reward and isinstance(reward, Iterable):
             reward = float(self.reward_agg_fn(reward))
@@ -145,6 +265,12 @@ class GymmaWrapper(MultiAgentEnv):
         """Returns initial observations and info"""
         obs, info = self._env.reset(seed=seed, options=options)
         self._obs = self._pad_observation(obs)
+        # SELMA diagnostic: record the episode's initial food-cell count, used to
+        # bound successful_load_events per episode. Read-only, no extra RNG use.
+        if self._is_lbforaging and isinstance(info, dict):
+            info["initial_food_count"] = int(
+                np.count_nonzero(self._env.unwrapped.field)
+            )
         return self._obs, info
 
     def render(self):
