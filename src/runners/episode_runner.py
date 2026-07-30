@@ -204,10 +204,10 @@ class EpisodeRunner:
         if getattr(self.args, 'selma_log_csv', ''):
             import os, csv as _csv
             _f = self.args.selma_log_csv
-            _new = not os.path.exists(_f)
+            write_header = not os.path.exists(_f) or os.path.getsize(_f) == 0
             with open(_f, 'a', newline='') as _fh:
                 _w = _csv.writer(_fh)
-                if _new:
+                if write_header:
                     _w.writerow(['t_env','test_mode','ep_length','team_return',
                                  'multi_agent_reward_steps','single_agent_reward_steps'] +
                                 [f'agent{j}_return' for j in range(self.args.n_agents)] +
