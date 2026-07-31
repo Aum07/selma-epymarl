@@ -50,6 +50,40 @@ class EpisodeRunner:
         # Log the first run
         self.log_train_stats_t = -1000000
 
+        # SELMA Stage B: shadow detector bank. Created only for selma_mode
+        # "shadow"; with the default "off" nothing below ever runs, so plain
+        # QMIX behaviour is bit-for-bit unchanged.
+        self.selma_bank = None
+        self.selma_shadow_writer = None
+        if getattr(self.args, "selma_mode", "off") == "shadow":
+            from selma.detector import ShadowDetectorBank
+            from selma.shadow_log import ShadowCsvWriter
+
+            grid_shape = (
+                self.env.get_selma_grid_shape()
+                if hasattr(self.env, "get_selma_grid_shape")
+                else None
+            )
+            if grid_shape is not None:
+                self.selma_bank = ShadowDetectorBank(
+                    # args.n_agents is not populated until run_sequential has
+                    # called get_env_info(), so take it from the env directly.
+                    n_agents=self.env.get_env_info()["n_agents"],
+                    grid_shape=grid_shape,
+                    condition=str(self.args.env_args.get("key", self.args.env)),
+                    seed=self.args.seed,
+                    rearm_steps=getattr(self.args, "selma_rearm_steps", 3),
+                    cooldown_steps=getattr(self.args, "selma_cooldown_steps", 5),
+                    max_events_per_episode=getattr(
+                        self.args, "selma_max_events_per_episode", 2
+                    ),
+                    w_inbound=getattr(self.args, "selma_w_inbound", 3),
+                )
+                if getattr(self.args, "selma_shadow_csv", ""):
+                    self.selma_shadow_writer = ShadowCsvWriter(
+                        self.args.selma_shadow_csv
+                    )
+
     def setup(self, scheme, groups, preprocess, mac):
         self.new_batch = partial(
             EpisodeBatch,
@@ -84,6 +118,12 @@ class EpisodeRunner:
 
     def run(self, test_mode=False):
         self.reset()
+
+        # SELMA Stage B: training episodes only. Greedy evaluation must never
+        # update histories, latches, cooldowns, budgets, pending labels or rows.
+        selma_bank = self.selma_bank if not test_mode else None
+        if selma_bank is not None:
+            selma_bank.reset_episode(None)
 
         terminated = False
         if self.args.common_reward:
@@ -122,6 +162,47 @@ class EpisodeRunner:
             _step_loads = {k: env_info.pop(k, 0) for k in LBF_LOAD_EVENT_KEYS}
             for _k in LBF_LOAD_EVENT_KEYS:
                 load_event_totals[_k] += _step_loads[_k]
+            # SELMA Stage A: structured per-step record, available online here.
+            # Read-only: no detector, provider, potential, or shaping exists yet,
+            # so nothing downstream of this point is affected.
+            selma_step_info = (
+                self.env.get_selma_step_info()
+                if hasattr(self.env, "get_selma_step_info")
+                else None
+            )
+            if selma_step_info is not None:
+                # SELMA HARD invariant: the structured events must reproduce the
+                # existing validated aggregate counters exactly, and the record
+                # must be aligned with the transition index it is stored against.
+                if selma_step_info.episode_step != self.t:
+                    raise AssertionError(
+                        "SELMA invariant violated: step info episode_step="
+                        f"{selma_step_info.episode_step} != runner t={self.t}"
+                    )
+                if len(selma_step_info.failed_load_events) != _step_loads[
+                    "failed_load_events"
+                ]:
+                    raise AssertionError(
+                        "SELMA invariant violated: structured failed_load_events "
+                        f"({len(selma_step_info.failed_load_events)}) != aggregate "
+                        f"counter ({_step_loads['failed_load_events']}) at step {self.t}"
+                    )
+                if len(selma_step_info.successful_load_events) != _step_loads[
+                    "successful_load_events"
+                ]:
+                    raise AssertionError(
+                        "SELMA invariant violated: structured successful_load_events "
+                        f"({len(selma_step_info.successful_load_events)}) != aggregate "
+                        f"counter ({_step_loads['successful_load_events']}) at step {self.t}"
+                    )
+                # SELMA Stage B: shadow observation only. Reads the immutable
+                # Stage A record and the raw team reward; writes nothing back.
+                if selma_bank is not None:
+                    selma_bank.update(
+                        step_info=selma_step_info,
+                        raw_team_reward=float(np.asarray(reward).sum()),
+                        t_env=self.t_env + self.t,
+                    )
             if _par is not None:
                 _pa = np.asarray(_par, dtype=float)
                 per_agent_ep += _pa
@@ -224,6 +305,30 @@ class EpisodeRunner:
                              multi_agent_reward_steps, single_agent_reward_steps] +
                             [float(x) for x in per_agent_ep] +
                             [load_event_totals[k] for k in LBF_LOAD_EVENT_KEYS])
+
+        # SELMA Stage B: resolve this episode's pending natural-resolution
+        # labels and append rows to the separate shadow CSV. This is the only
+        # additional output shadow mode is permitted to produce.
+        if selma_bank is not None:
+            selma_bank.finish_episode()
+            # SELMA HARD invariant: shadow mode must never query a provider,
+            # activate a subgoal, or produce shaping reward.
+            if (
+                selma_bank.query_count != 0
+                or selma_bank.provider_call_count != 0
+                or selma_bank.active_subgoal_count != 0
+                or selma_bank.total_shaping_reward != 0.0
+            ):
+                raise AssertionError(
+                    "SELMA shadow invariant violated: queries="
+                    f"{selma_bank.query_count} providers={selma_bank.provider_call_count} "
+                    f"subgoals={selma_bank.active_subgoal_count} "
+                    f"shaping={selma_bank.total_shaping_reward}"
+                )
+            if self.selma_shadow_writer is not None:
+                self.selma_shadow_writer.write(selma_bank.drain_rows())
+            else:
+                selma_bank.drain_rows()
 
         if not test_mode:
             self.t_env += self.t

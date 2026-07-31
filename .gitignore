@@ -247,3 +247,11 @@ $RECYCLE.BIN/
 
 # End of https://www.gitignore.io/api/linux,python,windows,pycharm+all,visualstudiocoderesults/
 results/
+
+# SELMA: generated analysis outputs. Scripts and small machine-readable JSON
+# reports are tracked; regenerable bulk artifacts are not.
+analysis/out/**/*.csv
+analysis/out/**/*.log
+analysis/out/**/*.png
+analysis/out/smoke/
+

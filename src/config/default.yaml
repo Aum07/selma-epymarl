@@ -21,6 +21,12 @@ buffer_cpu_only: True # If true we won't keep all of the replay buffer in vram
 # --- Logging options ---
 use_tensorboard: False # Log results to tensorboard
 selma_log_csv: "" # SELMA: path for per-episode per-agent return CSV (empty = disabled)
+selma_mode: "off" # SELMA: off | shadow. Stage B adds shadow only; off is unchanged plain QMIX
+selma_shadow_csv: "" # SELMA: path for the Stage B shadow detector CSV (empty = disabled)
+selma_rearm_steps: 3 # SELMA Stage B lifecycle (calibration value, not a frozen setting)
+selma_cooldown_steps: 5 # SELMA Stage B lifecycle (calibration value, not a frozen setting)
+selma_max_events_per_episode: 2 # SELMA Stage B lifecycle (calibration value, not frozen)
+selma_w_inbound: 3 # SELMA Stage B inbound-help window (shadow comparison only)
 use_wandb: False # Log results to W&B
 wandb_team: null # W&B team name
 wandb_project: null # W&B project name

@@ -9,6 +9,7 @@ import numpy as np
 from .multiagentenv import MultiAgentEnv
 from .wrappers import FlattenObservation
 import envs.pretrained as pretrained  # noqa
+from selma.load_events import build_selma_step_info
 
 try:
     from .pz_wrapper import PettingZooWrapper  # noqa
@@ -144,6 +145,12 @@ class GymmaWrapper(MultiAgentEnv):
         self._obs = None
         self._info = None
 
+        # SELMA Stage A: structured per-step record, replaced after every
+        # env.step and cleared on reset so it can never leak across episodes.
+        self._selma_step_info = None
+        self._selma_episode_id = -1
+        self._selma_step = 0
+
         self.longest_action_space = max(self._env.action_space, key=lambda x: x.n)
         self.longest_observation_space = max(
             self._env.observation_space, key=lambda x: x.shape
@@ -184,6 +191,10 @@ class GymmaWrapper(MultiAgentEnv):
         # SELMA diagnostic: snapshot LBF state immediately before env.step, so
         # load events can be attributed using pre-step positions/levels/actions.
         # Read-only; does not consume randomness or otherwise touch the env.
+        # SELMA Stage A: drop the previous step's record up front, so a failure
+        # part-way through this step cannot leave a stale record readable.
+        self._selma_step_info = None
+
         _lbf_pre = None
         if self._is_lbforaging:
             _unwrapped = self._env.unwrapped
@@ -200,16 +211,38 @@ class GymmaWrapper(MultiAgentEnv):
         if isinstance(self._info, dict) and isinstance(reward, Iterable):
             self._info["per_agent_reward"] = [float(r) for r in reward]
 
-        if _lbf_pre is not None and isinstance(self._info, dict):
-            self._info.update(
-                lbf_load_diagnostics(
-                    _lbf_pre["field"],
-                    _lbf_pre["positions"],
-                    _lbf_pre["levels"],
-                    actions,
-                    self._env.unwrapped.field,
-                )
+        if _lbf_pre is not None:
+            # Copy the post-step field once; both the existing aggregate counters
+            # and the structured record read from this value snapshot, so neither
+            # retains a reference to the live environment array.
+            _lbf_post_field = np.array(self._env.unwrapped.field, copy=True)
+
+            # SELMA Stage A: structured, immutable per-step record. Exposed only
+            # via get_selma_step_info(); deliberately NOT placed in env_info,
+            # which EPyMARL sums into runner statistics as if every value were
+            # numeric.
+            self._selma_step_info = build_selma_step_info(
+                episode_id=self._selma_episode_id,
+                episode_step=self._selma_step,
+                pre_field=_lbf_pre["field"],
+                positions=_lbf_pre["positions"],
+                levels=_lbf_pre["levels"],
+                actions=actions,
+                post_field=_lbf_post_field,
             )
+
+            if isinstance(self._info, dict):
+                self._info.update(
+                    lbf_load_diagnostics(
+                        _lbf_pre["field"],
+                        _lbf_pre["positions"],
+                        _lbf_pre["levels"],
+                        actions,
+                        _lbf_post_field,
+                    )
+                )
+
+        self._selma_step += 1
 
         if self.common_reward and isinstance(reward, Iterable):
             reward = float(self.reward_agg_fn(reward))
@@ -221,6 +254,20 @@ class GymmaWrapper(MultiAgentEnv):
         if isinstance(done, Iterable):
             done = all(done)
         return self._obs, reward, done, truncated, self._info
+
+    def get_selma_step_info(self):
+        """SELMA Stage A: immutable record for the most recent env.step.
+
+        Returns None before the first step of an episode, after reset, and for
+        every non-lbforaging environment.
+        """
+        return self._selma_step_info
+
+    def get_selma_grid_shape(self):
+        """SELMA Stage B: (rows, cols) of the lbforaging field, else None."""
+        if not self._is_lbforaging:
+            return None
+        return tuple(self._env.unwrapped.field.shape)
 
     def get_obs(self):
         """Returns all agent observations in a list"""
@@ -265,6 +312,11 @@ class GymmaWrapper(MultiAgentEnv):
         """Returns initial observations and info"""
         obs, info = self._env.reset(seed=seed, options=options)
         self._obs = self._pad_observation(obs)
+        # SELMA Stage A: no step has happened yet in the new episode, and the
+        # previous episode's record must not remain readable.
+        self._selma_step_info = None
+        self._selma_episode_id += 1
+        self._selma_step = 0
         # SELMA diagnostic: record the episode's initial food-cell count, used to
         # bound successful_load_events per episode. Read-only, no extra RNG use.
         if self._is_lbforaging and isinstance(info, dict):
