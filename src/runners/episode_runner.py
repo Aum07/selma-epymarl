@@ -103,7 +103,24 @@ class EpisodeRunner:
         self.env.save_replay()
 
     def close_env(self):
+        # SELMA Stage B: persist the per-variant calibration summary before the
+        # process exits. Counters such as eligible_steps exist only in memory --
+        # they are not derivable from the shadow CSV, which has rows only where
+        # candidates occurred -- so the report generator reads this sidecar.
+        self.write_selma_summary()
         self.env.close()
+
+    def write_selma_summary(self):
+        """Dump the shadow bank's calibration summary, if one was configured."""
+        path = getattr(self.args, "selma_shadow_summary_json", "")
+        if self.selma_bank is None or not path:
+            return None
+        import json
+
+        summary = self.selma_bank.calibration_summary()
+        with open(path, "w") as handle:
+            json.dump(summary, handle, indent=2, sort_keys=True)
+        return path
 
     def reset(self):
         self.batch = self.new_batch()

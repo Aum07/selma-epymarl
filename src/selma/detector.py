@@ -63,6 +63,27 @@ M_GRID = (2, 3)
 TEAM_GATE_GRID = (None, 5, 10, 15)
 INBOUND_GRID = (False, True)
 
+RESOLUTION_HORIZONS = (5, 10)
+RESOLUTION_LABELS = ("resolved", "unresolved", "censored")
+EPISODE_PHASES = ("early", "mid", "late")
+
+
+def episode_phase(step, episode_length):
+    """Which third of its episode a transition falls in.
+
+    ``episode_length`` is the number of transitions the episode actually
+    produced, so the split adapts to episodes that terminate early rather than
+    assuming every episode runs to the time limit.
+    """
+    if episode_length <= 0:
+        return EPISODE_PHASES[0]
+    fraction = step / episode_length
+    if fraction < 1.0 / 3.0:
+        return EPISODE_PHASES[0]
+    if fraction < 2.0 / 3.0:
+        return EPISODE_PHASES[1]
+    return EPISODE_PHASES[2]
+
 
 class DetectorVariant:
     """One point of the shadow grid. Immutable configuration."""
@@ -717,8 +738,31 @@ class ShadowDetectorBank:
         censored; they are never silently converted into "unresolved".
         """
         for row, step, food_id in self.pending_rows:
-            row["resolved_within_5"] = self._label(step, food_id, 5)
-            row["resolved_within_10"] = self._label(step, food_id, 10)
+            for horizon in RESOLUTION_HORIZONS:
+                row[f"resolved_within_{horizon}"] = self._label(step, food_id, horizon)
+
+        # Per-final-event accounting. Done here, where the natural-resolution
+        # labels and the episode's true length are both known, so the
+        # calibration report never has to re-derive them from the shadow CSV
+        # (which carries no episode length and would have to be re-parsed in
+        # full). Counters only: no firing decision is read or changed.
+        episode_length = self.last_step + 1
+        for row, step, _food_id in self.pending_rows:
+            if row["row_type"] != "coalesced_event":
+                continue
+            state = self.variant_state[row["variant_id"]]
+            state.bump(f"event_phase_{episode_phase(step, episode_length)}")
+            state.bump(f"event_recipients_{len(row['recipient_ids'])}")
+            for horizon in RESOLUTION_HORIZONS:
+                state.bump(
+                    f"resolution{horizon}_{row[f'resolved_within_{horizon}']}"
+                )
+            # A final event must always rest on a feasible coalition; an
+            # infeasible one is suppressed as semantically invalid before it can
+            # fire. Counted so the report can assert zero rather than assume it.
+            if not row["coalition_feasible"]:
+                state.bump("semantically_invalid_final_events")
+
         self.episodes_seen += 1
         for variant_id, state in self.variant_state.items():
             cumulative = self.cumulative_counters[variant_id]
@@ -800,3 +844,138 @@ class ShadowDetectorBank:
                 "final_events": counters.get("final_events", 0),
             }
         return report
+
+    # -- calibration report ------------------------------------------------
+
+    def calibration_summary(self):
+        """Everything the Stage B calibration report needs, per variant.
+
+        Built on top of :meth:`variant_report`, so the ``eligible_steps``
+        denominator and the gate statistics keep their single definition, and
+        adds the lifecycle, resolution, recipient and phase accounting. Pure
+        aggregation of counters already collected during the run.
+        """
+        report = self.variant_report()
+        summary = {
+            "condition": self.condition,
+            "seed": self.seed,
+            "n_agents": self.n_agents,
+            "grid_shape": list(self.grid_shape),
+            "episodes_seen": self.episodes_seen,
+            "lifecycle_config": {
+                "rearm_steps": self.rearm_steps,
+                "cooldown_steps": self.cooldown_steps,
+                "max_events_per_episode": self.max_events_per_episode,
+                "w_inbound": self.w_inbound,
+            },
+            "zero_guarantees": {
+                "query_count": self.query_count,
+                "provider_call_count": self.provider_call_count,
+                "active_subgoal_count": self.active_subgoal_count,
+                "total_shaping_reward": self.total_shaping_reward,
+            },
+            "variants": {},
+        }
+
+        for variant in self.variants:
+            vid = variant.variant_id
+            counters = self.cumulative_counters[vid]
+            entry = dict(report[vid])
+            hist = self.events_per_episode_hist[vid]
+
+            observed = entry["observed_steps"]
+            final_events = entry["final_events"]
+            episodes = self.episodes_seen
+
+            entry["events_per_1000_steps"] = (
+                1000.0 * final_events / observed if observed else None
+            )
+            entry["events_per_episode"] = (
+                final_events / episodes if episodes else None
+            )
+            entry["episodes_with_0_events"] = hist.get(0, 0)
+            entry["episodes_with_1_event"] = hist.get(1, 0)
+            entry["episodes_with_multiple_events"] = sum(
+                n for k, n in hist.items() if k >= 2
+            )
+            entry["events_per_episode_hist"] = {str(k): v for k, v in sorted(hist.items())}
+
+            # Semantic validity. ``semantically_invalid`` counts raw candidates
+            # dropped for having no feasible coalition; the *event* count is the
+            # number that nonetheless reached a firing, and must be zero.
+            entry["semantically_invalid_candidates"] = counters.get(
+                "semantically_invalid", 0
+            )
+            entry["semantically_invalid_events"] = counters.get(
+                "semantically_invalid_final_events", 0
+            )
+
+            # Suppression ledger.
+            entry["suppressed_by_inbound"] = counters.get("suppressed_by_inbound", 0)
+            entry["raw_candidates_after_inbound"] = (
+                entry["candidates_after_team_gate"]
+                - entry["semantically_invalid_candidates"]
+                - entry["suppressed_by_inbound"]
+            )
+            entry["same_food_coalesced"] = counters.get("same_food_coalesced", 0)
+            for key in (
+                "suppressed_by_latch",
+                "suppressed_by_cooldown",
+                "suppressed_by_rearm",
+                "suppressed_by_budget",
+                "resolved_food_gone",
+                "resolved_condition_false",
+            ):
+                entry[key] = counters.get(key, 0)
+
+            # Team-gate diagnostics. The gate is vacuous when it cannot
+            # discriminate: either it never closes (filters nothing) or it never
+            # opens / never becomes eligible (would filter everything).
+            gate_pct = entry["gate_open_percentage"]
+            if variant.w_team is None:
+                vacuity = "ungated"
+            elif entry["eligible_steps"] == 0:
+                vacuity = "vacuous_no_eligible_steps"
+            elif gate_pct == 0.0:
+                vacuity = "vacuous_never_open"
+            elif gate_pct == 1.0:
+                vacuity = "vacuous_always_open"
+            else:
+                vacuity = "discriminating"
+            entry["team_gate_vacuity"] = vacuity
+            entry["team_gate_retained"] = entry["candidates_after_team_gate"]
+            entry["team_gate_suppressed"] = entry["suppressed_by_team_gate"]
+            entry["team_gate_filtering_contribution"] = entry[
+                "proportion_raw_candidates_suppressed_by_gate"
+            ]
+
+            # Natural resolution. Censored horizons are excluded from the
+            # denominator rather than counted as unresolved, so the rate is
+            # reported against an explicit valid denominator.
+            for horizon in RESOLUTION_HORIZONS:
+                labels = {
+                    label: counters.get(f"resolution{horizon}_{label}", 0)
+                    for label in RESOLUTION_LABELS
+                }
+                valid = labels["resolved"] + labels["unresolved"]
+                entry[f"resolved_within_{horizon}"] = labels["resolved"]
+                entry[f"unresolved_within_{horizon}"] = labels["unresolved"]
+                entry[f"censored_within_{horizon}"] = labels["censored"]
+                entry[f"valid_denominator_{horizon}"] = valid
+                entry[f"natural_resolution_rate_{horizon}"] = (
+                    labels["resolved"] / valid if valid else None
+                )
+
+            entry["recipient_count_distribution"] = {
+                key[len("event_recipients_") :]: value
+                for key, value in sorted(counters.items())
+                if key.startswith("event_recipients_")
+            }
+            entry["events_by_episode_phase"] = {
+                phase: counters.get(f"event_phase_{phase}", 0)
+                for phase in EPISODE_PHASES
+            }
+
+            summary["variants"][vid] = entry
+
+        return summary
