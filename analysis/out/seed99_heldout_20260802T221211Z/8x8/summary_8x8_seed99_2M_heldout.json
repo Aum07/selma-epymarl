@@ -1,0 +1,84 @@
+{
+  "condition": "lbforaging:Foraging-8x8-2p-2f-coop-v3",
+  "episodes_seen": 40020,
+  "grid_shape": [
+    8,
+    8
+  ],
+  "lifecycle_config": {
+    "cooldown_steps": 5,
+    "max_events_per_episode": 2,
+    "rearm_steps": 3,
+    "w_inbound": 3
+  },
+  "n_agents": 2,
+  "seed": 99,
+  "variants": {
+    "wf15_m3_t5_ibon": {
+      "candidates_after_team_gate": 249102,
+      "censored_within_10": 826,
+      "censored_within_5": 410,
+      "eligible_steps": 1839924,
+      "episodes_with_0_events": 30248,
+      "episodes_with_1_event": 8682,
+      "episodes_with_multiple_events": 1090,
+      "events_by_episode_phase": {
+        "early": 7627,
+        "late": 1380,
+        "mid": 1855
+      },
+      "events_per_1000_steps": 5.430989138021724,
+      "events_per_episode": 0.2714142928535732,
+      "events_per_episode_hist": {
+        "0": 30248,
+        "1": 8682,
+        "2": 1090
+      },
+      "final_events": 10862,
+      "gate_open_percentage": 0.9410089764577233,
+      "gate_open_steps": 1731385,
+      "inbound_variant": "on",
+      "incomplete_team_window_steps": 160080,
+      "m": 3,
+      "natural_resolution_rate_10": 0.10721402949382224,
+      "natural_resolution_rate_5": 0.06257175660160735,
+      "observed_steps": 2000004,
+      "proportion_raw_candidates_suppressed_by_gate": 0.009357539122308167,
+      "raw_candidates": 251455,
+      "raw_candidates_after_inbound": 228450,
+      "recipient_count_distribution": {
+        "2": 10862
+      },
+      "resolved_condition_false": 4289,
+      "resolved_food_gone": 2231,
+      "resolved_within_10": 1076,
+      "resolved_within_5": 654,
+      "same_food_coalesced": 0,
+      "semantically_invalid_candidates": 0,
+      "semantically_invalid_events": 0,
+      "suppressed_by_budget": 98,
+      "suppressed_by_cooldown": 4621,
+      "suppressed_by_inbound": 20652,
+      "suppressed_by_incomplete_team_window": 2284,
+      "suppressed_by_latch": 196004,
+      "suppressed_by_rearm": 16865,
+      "suppressed_by_team_gate": 2353,
+      "team_gate_filtering_contribution": 0.009357539122308167,
+      "team_gate_retained": 249102,
+      "team_gate_suppressed": 2353,
+      "team_gate_vacuity": "discriminating",
+      "team_gate_variant": "W_team=5",
+      "unresolved_within_10": 8960,
+      "unresolved_within_5": 9798,
+      "valid_denominator_10": 10036,
+      "valid_denominator_5": 10452,
+      "w_fail": 15
+    }
+  },
+  "zero_guarantees": {
+    "active_subgoal_count": 0,
+    "provider_call_count": 0,
+    "query_count": 0,
+    "total_shaping_reward": 0.0
+  }
+}

@@ -1,0 +1,404 @@
+{
+  "run_id": "seed91_val10x10_20260802T151245Z",
+  "condition": "lbforaging:Foraging-10x10-3p-3f-v3",
+  "seed": 91,
+  "n_agents": 3,
+  "grid": [
+    10,
+    10
+  ],
+  "episodes_seen": 40019,
+  "observed_steps": 2000007,
+  "source_head": "92ece20",
+  "status": "CORRECTED-PROTOCOL ANALYSIS COMPLETE",
+  "integrity": {
+    "exit_code": 0,
+    "status": "COMPLETED",
+    "final_t_env": 2000007,
+    "t_max": 2000000,
+    "raw_csv_bytes": 3708043487,
+    "raw_csv_rows": 10014507,
+    "nul_bytes": 0,
+    "rows_with_wrong_field_count": 0,
+    "final_record_complete": true,
+    "files_stable": true
+  },
+  "reconciliation": {
+    "reconciled": true,
+    "problems": [],
+    "variants_present": 48,
+    "csv_rows": 10014507,
+    "raw_candidate_rows": 9519496,
+    "coalesced_event_rows": 495011,
+    "episodes_with_rows": 10304,
+    "max_t_env_in_csv": 1999856,
+    "final_event_mismatches": 0,
+    "recipient_distribution_mismatches": 0
+  },
+  "invariants": {
+    "checks_per_variant": 15,
+    "variants": 48,
+    "all_pass_excluding_E4_coalescing_clause": true,
+    "recipient_counts_observed": [
+      2,
+      3
+    ],
+    "recipient_rule": "2-3 (condition-adjusted; NOT the 8x8 exactly-2 rule)",
+    "semantically_invalid_events": 0,
+    "semantically_invalid_candidates": 0
+  },
+  "eligibility": {
+    "E1_team_gate_enabled": 36,
+    "E2_inbound_on": 24,
+    "E3_invariants_pass": 48,
+    "E4_literal_as_frozen": 0,
+    "E4_invalid_clause_only": 48,
+    "eligible_under_literal_frozen_rules": 0,
+    "blocker": "E4 as frozen includes same_food_coalesced==0. In 10x10 every variant has same_food_coalesced in [2473,3493], so the literal rule yields an EMPTY eligible set and the frozen selection rule is inapplicable. Reported, not repaired.",
+    "literal_E4_eligible_count": 0,
+    "literal_E4_note": "preserved: the original literal E4, including same_food_coalesced == 0, yielded 0/48 eligible and made the literal protocol non-applicable to the 10x10 condition",
+    "corrected_E4_definition": {
+      "semantically_invalid_final_events": 0,
+      "surviving_duplicate_final_events": 0,
+      "measured_by": "duplicate event_id occurrences among coalesced_event rows (existing identity, unchanged)",
+      "same_food_coalesced": "descriptive diagnostic only; never an eligibility failure"
+    },
+    "corrected_E4_eligible_count": 18,
+    "exclusions": {
+      "E2_inbound_off_only": 18,
+      "E1_ungated_and_E2_off": 6,
+      "E1_ungated_only": 6
+    }
+  },
+  "selection": {
+    "applied": true,
+    "protocol": "frozen score and tie-breaks, unchanged",
+    "score": "d = sqrt((1 - coverage_norm)^2 + res_at_10_norm^2)",
+    "tie_breaks": [
+      "lower events_per_1k",
+      "lexicographic variant name"
+    ],
+    "normalisation_endpoints": {
+      "coverage": [
+        18.723606287013673,
+        23.451360603713233
+      ],
+      "res_at_10": [
+        1.3110367892976589,
+        1.4009928295642582
+      ],
+      "note": "recomputed from the 10x10 eligible set only; 8x8 endpoints NOT reused"
+    },
+    "ranking": [
+      {
+        "rank": 1,
+        "variant": "wf15_m2_t10_ibon",
+        "coverage_pct": 21.872111,
+        "res_at_10_pct": 1.349259,
+        "coverage_norm": 0.665962,
+        "res_at_10_norm": 0.424899,
+        "d": 0.540482,
+        "events_per_1k": 5.211982,
+        "gate_open_pct": 95.7806,
+        "pareto_efficient": true
+      },
+      {
+        "rank": 2,
+        "variant": "wf10_m2_t10_ibon",
+        "coverage_pct": 21.624728,
+        "res_at_10_pct": 1.35833,
+        "coverage_norm": 0.613636,
+        "res_at_10_norm": 0.525732,
+        "d": 0.652435,
+        "events_per_1k": 5.127982,
+        "gate_open_pct": 95.7806,
+        "pareto_efficient": false
+      },
+      {
+        "rank": 3,
+        "variant": "wf15_m2_t15_ibon",
+        "coverage_pct": 20.412804,
+        "res_at_10_pct": 1.324016,
+        "coverage_norm": 0.357294,
+        "res_at_10_norm": 0.144286,
+        "d": 0.658703,
+        "events_per_1k": 4.776483,
+        "gate_open_pct": 94.0811,
+        "pareto_efficient": true
+      },
+      {
+        "rank": 4,
+        "variant": "wf5_m2_t10_ibon",
+        "coverage_pct": 21.294885,
+        "res_at_10_pct": 1.357673,
+        "coverage_norm": 0.543869,
+        "res_at_10_norm": 0.518428,
+        "d": 0.690524,
+        "events_per_1k": 5.047482,
+        "gate_open_pct": 95.7806,
+        "pareto_efficient": false
+      },
+      {
+        "rank": 5,
+        "variant": "wf15_m2_t5_ibon",
+        "coverage_pct": 23.451361,
+        "res_at_10_pct": 1.376331,
+        "coverage_norm": 1.0,
+        "res_at_10_norm": 0.725847,
+        "d": 0.725847,
+        "events_per_1k": 5.66198,
+        "gate_open_pct": 97.6811,
+        "pareto_efficient": true
+      },
+      {
+        "rank": 6,
+        "variant": "wf10_m2_t15_ibon",
+        "coverage_pct": 20.165421,
+        "res_at_10_pct": 1.331674,
+        "coverage_norm": 0.304968,
+        "res_at_10_norm": 0.229414,
+        "d": 0.731915,
+        "events_per_1k": 4.698484,
+        "gate_open_pct": 94.0811,
+        "pareto_efficient": false
+      },
+      {
+        "rank": 7,
+        "variant": "wf5_m2_t15_ibon",
+        "coverage_pct": 19.878058,
+        "res_at_10_pct": 1.326595,
+        "coverage_norm": 0.244186,
+        "res_at_10_norm": 0.172954,
+        "d": 0.77535,
+        "events_per_1k": 4.629984,
+        "gate_open_pct": 94.0811,
+        "pareto_efficient": false
+      },
+      {
+        "rank": 8,
+        "variant": "wf10_m2_t5_ibon",
+        "coverage_pct": 23.231465,
+        "res_at_10_pct": 1.384083,
+        "coverage_norm": 0.953488,
+        "res_at_10_norm": 0.812022,
+        "d": 0.813353,
+        "events_per_1k": 5.58098,
+        "gate_open_pct": 97.6811,
+        "pareto_efficient": false
+      },
+      {
+        "rank": 9,
+        "variant": "wf5_m2_t5_ibon",
+        "coverage_pct": 22.894125,
+        "res_at_10_pct": 1.384727,
+        "coverage_norm": 0.882135,
+        "res_at_10_norm": 0.819177,
+        "d": 0.827612,
+        "events_per_1k": 5.498481,
+        "gate_open_pct": 97.6811,
+        "pareto_efficient": false
+      },
+      {
+        "rank": 10,
+        "variant": "wf10_m3_t5_ibon",
+        "coverage_pct": 21.439816,
+        "res_at_10_pct": 1.38254,
+        "coverage_norm": 0.574524,
+        "res_at_10_norm": 0.794867,
+        "d": 0.901578,
+        "events_per_1k": 5.084982,
+        "gate_open_pct": 97.6811,
+        "pareto_efficient": false
+      },
+      {
+        "rank": 11,
+        "variant": "wf5_m3_t5_ibon",
+        "coverage_pct": 21.202429,
+        "res_at_10_pct": 1.380471,
+        "coverage_norm": 0.524313,
+        "res_at_10_norm": 0.771872,
+        "d": 0.906678,
+        "events_per_1k": 5.055482,
+        "gate_open_pct": 97.6811,
+        "pareto_efficient": false
+      },
+      {
+        "rank": 12,
+        "variant": "wf10_m3_t15_ibon",
+        "coverage_pct": 18.938504,
+        "res_at_10_pct": 1.327669,
+        "coverage_norm": 0.045455,
+        "res_at_10_norm": 0.184888,
+        "d": 0.972286,
+        "events_per_1k": 4.378485,
+        "gate_open_pct": 94.0811,
+        "pareto_efficient": false
+      },
+      {
+        "rank": 13,
+        "variant": "wf5_m3_t15_ibon",
+        "coverage_pct": 18.723606,
+        "res_at_10_pct": 1.311037,
+        "coverage_norm": 0.0,
+        "res_at_10_norm": 0.0,
+        "d": 1.0,
+        "events_per_1k": 4.350485,
+        "gate_open_pct": 94.0811,
+        "pareto_efficient": true
+      },
+      {
+        "rank": 14,
+        "variant": "wf10_m3_t10_ibon",
+        "coverage_pct": 20.192908,
+        "res_at_10_pct": 1.376978,
+        "coverage_norm": 0.310782,
+        "res_at_10_norm": 0.733037,
+        "d": 1.006163,
+        "events_per_1k": 4.746483,
+        "gate_open_pct": 95.7806,
+        "pareto_efficient": false
+      },
+      {
+        "rank": 15,
+        "variant": "wf15_m3_t15_ibon",
+        "coverage_pct": 19.083435,
+        "res_at_10_pct": 1.350288,
+        "coverage_norm": 0.07611,
+        "res_at_10_norm": 0.436342,
+        "d": 1.021747,
+        "events_per_1k": 4.436984,
+        "gate_open_pct": 94.0811,
+        "pareto_efficient": false
+      },
+      {
+        "rank": 16,
+        "variant": "wf5_m3_t10_ibon",
+        "coverage_pct": 19.943027,
+        "res_at_10_pct": 1.375198,
+        "coverage_norm": 0.257928,
+        "res_at_10_norm": 0.713248,
+        "d": 1.029268,
+        "events_per_1k": 4.715983,
+        "gate_open_pct": 95.7806,
+        "pareto_efficient": false
+      },
+      {
+        "rank": 17,
+        "variant": "wf15_m3_t10_ibon",
+        "coverage_pct": 20.332842,
+        "res_at_10_pct": 1.384579,
+        "coverage_norm": 0.340381,
+        "res_at_10_norm": 0.817531,
+        "d": 1.050455,
+        "events_per_1k": 4.807483,
+        "gate_open_pct": 95.7806,
+        "pareto_efficient": false
+      },
+      {
+        "rank": 18,
+        "variant": "wf15_m3_t5_ibon",
+        "coverage_pct": 21.569754,
+        "res_at_10_pct": 1.400993,
+        "coverage_norm": 0.602008,
+        "res_at_10_norm": 1.0,
+        "d": 1.076289,
+        "events_per_1k": 5.143982,
+        "gate_open_pct": 97.6811,
+        "pareto_efficient": false
+      }
+    ],
+    "pareto_front": [
+      "wf15_m2_t10_ibon",
+      "wf15_m2_t15_ibon",
+      "wf15_m2_t5_ibon",
+      "wf5_m3_t15_ibon"
+    ]
+  },
+  "solo_load_diagnostics": {
+    "train_episodes": 40019,
+    "successful_load_events": 10611,
+    "solo_load_events": 10133,
+    "multi_agent_load_events": 478,
+    "necessary_cooperative_load_events": 363,
+    "episodes_with_solo_pct": 22.64,
+    "episodes_with_multi_pct": 1.19,
+    "note": "non-zero as expected for a non-coop condition; separate population from the coalition-required failed-LOAD population the detector triggers on"
+  },
+  "frozen_8x8_selection_unaffected": true,
+  "protocol_status_label": "corrected-protocol analysis following a documented post-run, pre-ranking operationalisation erratum (PROTOCOL ERRATUM 001, 2026-08-02)",
+  "duplicate_scan": {
+    "10x10": {
+      "coalesced_event_rows": 495011,
+      "distinct_event_ids": 495011,
+      "duplicates": 0,
+      "variants_with_duplicates": 0
+    },
+    "8x8": {
+      "coalesced_event_rows": 525879,
+      "distinct_event_ids": 525879,
+      "duplicates": 0,
+      "variants_with_duplicates": 0
+    }
+  },
+  "frozen_configuration_result": {
+    "variant": "wf15_m3_t5_ibon",
+    "eligible": true,
+    "exclusion_reason": null,
+    "pareto_efficient": false,
+    "rank": 18,
+    "eligible_denominator": 18,
+    "coverage_pct": 21.569754,
+    "coverage_norm": 0.602008,
+    "res_at_10_pct": 1.400993,
+    "res_at_10_norm": 1.0,
+    "d": 1.076289,
+    "events_per_1k": 5.143982,
+    "final_events": 10288,
+    "cap_binding_pct": 4.138034,
+    "timing_early_mid_late_pct": [
+      55.1808,
+      25.3402,
+      19.479
+    ],
+    "recipients": {
+      "2": 6551,
+      "3": 3737,
+      "three_recipient_pct": 36.3239
+    },
+    "same_food_coalesced": 2953,
+    "gate_open_pct": 97.6811,
+    "margin_to_rank_17": 0.025834,
+    "margin_to_rank_1": 0.535807,
+    "preserved": "wf15_m3_t5_ibon remains the frozen 8x8-selected configuration; NOT retuned or replaced"
+  },
+  "res_at_10_scale_caveat": {
+    "coverage_range_pp": 4.7278,
+    "res_at_10_range_pp": 0.09,
+    "res_at_10_range_pp_8x8": 2.5726,
+    "note": "the 10x10 res@10 axis spans only 0.09 pp; min-max normalisation stretches that to [0,1], so normalised res@10 differences reflect very small absolute differences"
+  },
+  "gate_open_finding": {
+    "selected_variant_gate_open_pct": 97.68,
+    "eligible_range_pct": [
+      94.08,
+      97.68
+    ],
+    "note": "under this 10x10 condition the selected W_team=5 gate was open ~97.7% of steps, i.e. nearly always. Reported as a cross-condition-sensitivity FINDING under the frozen protocol; NOT a reason to retune."
+  },
+  "8x8_consistency_check": {
+    "eligible_set": 18,
+    "unchanged": true,
+    "coverage_endpoints": [
+      21.0709,
+      25.6156
+    ],
+    "res_at_10_endpoints": [
+      8.2449,
+      10.8175
+    ],
+    "rank_1": "wf15_m3_t5_ibon",
+    "d": 0.607348,
+    "ranking_unchanged": true,
+    "note": "E4-corrected applied retrospectively to the preserved 8x8 records changes nothing"
+  }
+}

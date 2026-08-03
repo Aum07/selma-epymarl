@@ -1,0 +1,98 @@
+{
+  "manifest_type": "Stage B seed-99 held-out validation \u2014 PRE-RUN PROVENANCE",
+  "created_utc": "2026-08-02T22:00:23Z",
+  "preflight_verdict": "FAILED AT STEP 3 \u2014 NOTHING LAUNCHED",
+  "git": {
+    "head": "92ece20ac5cab9d2f9aef2c974ddd3268265e674",
+    "head_short": "92ece20",
+    "subject": "SELMA: exact load-event counter, event-based struggle detector (shadow mode), and baselines",
+    "status_porcelain": [
+      "?? docs/project/selma_seed91_recovery_and_rerun_plan.md",
+      "?? docs/project/selma_stage_b_10x10_validation_report.md",
+      "?? docs/project/selma_stage_b_selection_record.md",
+      "?? docs/project/selma_stage_c_implementation_contract.md",
+      "?? docs/selma_stage_b_detector_calibration_subsection.md",
+      "?? docs/selma_stage_b_seed91_10x10_calibration.md",
+      "?? docs/selma_stage_b_seed91_calibration.md"
+    ],
+    "tracked_modifications": [],
+    "src_modifications": 0,
+    "default_yaml_modifications": 0,
+    "diff_lines": 0
+  },
+  "sha256": {
+    "docs/project/selma_stage_b_selection_record.md": "0ae018d05ec6bdfccdf1cbe8150721a01fde09d5e4f3bf64c7f46fa924b353d6",
+    "docs/project/selma_stage_b_10x10_validation_report.md": "73c57b2bc2cf4b345d10357b38307edae74e6962eff9b476b9add4a98919d274",
+    "docs/project/selma_stage_c_implementation_contract.md": "041783a4d0c9af0aae3aafa4750227af1fe08cb9089d88ca5e21b4abdc215a39",
+    "docs/selma_stage_b_detector_calibration_subsection.md": "576884ee3f7328147ee3bfa25b9ddf860e8f42854369611b3771c8716f6b4524",
+    "src/config/default.yaml": "305adee63328bb89e143b264dcb44bbcd8c992e89948ac4fbe1468c3f964c0e4",
+    "src/selma/detector.py": "f1aeba5c0dd0bef2e37a84968b95c6730d11acf89c31ec5d057db4028b7eea5c",
+    "src/selma/shadow_log.py": "b7703fe8f8a2a09dbd2a074b1eb75e0ba254ff2b5e39d62df9ce14706732b6ad",
+    "src/runners/episode_runner.py": "8ed9066c077996b1ea458a26dadb0990c6f079ad6c74cf7c7efa86e6907fb97a",
+    "analysis/out/seed91_retry_20260802T112458Z/8x8/summary_8x8_seed91_2M_retry.json": "5f5ab48519159922a582f5cff96950cce4824e7a0b4b22b5c51101b47ae80cef",
+    "analysis/out/seed91_val10x10_20260802T151245Z/10x10/summary_10x10_seed91_2M_val.json": "48a3784cc5379503c2411308725808db65a69bd1925e6f9146e017b3f3d16993",
+    "analysis/out/seed91_val10x10_20260802T151245Z/10x10/validation_results_10x10.json": "a4918562414503a141fc799bca28a15b0bede55c7f8e43794593bb0ef762dca4"
+  },
+  "frozen_configuration_read_from_selection_record": {
+    "source": "docs/project/selma_stage_b_selection_record.md \u00a73 (values transcribed, not inferred)",
+    "variant_id": "wf15_m3_t5_ibon",
+    "W_fail": 15,
+    "m": 3,
+    "W_team": 5,
+    "inbound_suppression": "on",
+    "w_inbound": 3,
+    "cooldown_steps": 5,
+    "rearm_steps": 3,
+    "max_events_per_episode": 2,
+    "selection_d": 0.607348,
+    "note": "latch/cooldown/rearm values transcribed verbatim from the frozen record; none inferred or altered"
+  },
+  "intended_run_configuration": {
+    "env": "gymma",
+    "env_args.key": "lbforaging:Foraging-8x8-2p-2f-coop-v3",
+    "env_args.time_limit": 50,
+    "seed": 99,
+    "t_max": 2000000,
+    "use_cuda": false,
+    "config": "qmix",
+    "learner": "q_learner",
+    "selma_mode": "shadow",
+    "selma_w_inbound": 3,
+    "selma_cooldown_steps": 5,
+    "selma_rearm_steps": 3,
+    "selma_max_events_per_episode": 2,
+    "detector_scope_required": "wf15_m3_t5_ibon ONLY (not the 48-variant grid)"
+  },
+  "blocker": {
+    "summary": "The existing configuration interface cannot restrict shadow execution to a single detector variant. Running seed 99 as specified would execute the full 48-variant grid, which the instruction explicitly forbids.",
+    "evidence": [
+      "src/selma/detector.py:172 \u2014 ShadowDetectorBank.__init__ accepts variants=None",
+      "src/selma/detector.py:182 \u2014 self.variants = build_variant_grid() if variants is None else tuple(variants)",
+      "src/runners/episode_runner.py:68-82 \u2014 bank constructed WITHOUT passing variants=; only n_agents, grid_shape, condition, seed, rearm_steps, cooldown_steps, max_events_per_episode, w_inbound",
+      "src/config/default.yaml \u2014 8 selma_* keys, none selects a variant (selma_log_csv, selma_mode, selma_shadow_csv, selma_shadow_summary_json, selma_rearm_steps, selma_cooldown_steps, selma_max_events_per_episode, selma_w_inbound)",
+      "src/selma/detector.py:61-64 \u2014 W_FAIL_GRID/M_GRID/TEAM_GATE_GRID/INBOUND_GRID are module constants, not config-driven"
+    ],
+    "consequence": "Selected-only shadow execution is IMPOSSIBLE without a source change.",
+    "action_taken": "STOPPED before launching anything, per instruction."
+  },
+  "storage_check": {
+    "wsl_root": {
+      "total_gib": 1006.9,
+      "free_gib": 938.6
+    },
+    "C": {
+      "total_gib": 372.7,
+      "free_gib": 37.5
+    },
+    "E": {
+      "total_gib": 447.0,
+      "free_gib": 353.5
+    }
+  },
+  "artifacts_protected": [
+    "analysis/out/seed91_retry_20260802T112458Z/8x8",
+    "analysis/out/seed91_val10x10_20260802T151245Z/10x10",
+    "/mnt/e/selma_shadow/seed91_retry_20260802T112458Z/8x8",
+    "/mnt/e/selma_shadow/seed91_val10x10_20260802T151245Z/10x10"
+  ]
+}

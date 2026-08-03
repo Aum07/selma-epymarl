@@ -28,6 +28,7 @@ selma_rearm_steps: 3 # SELMA Stage B lifecycle (calibration value, not a frozen 
 selma_cooldown_steps: 5 # SELMA Stage B lifecycle (calibration value, not a frozen setting)
 selma_max_events_per_episode: 2 # SELMA Stage B lifecycle (calibration value, not frozen)
 selma_w_inbound: 3 # SELMA Stage B inbound-help window (shadow comparison only)
+selma_variant_id: "" # SELMA Stage B: restrict the shadow bank to one variant id (empty = all 48, unchanged)
 use_wandb: False # Log results to W&B
 wandb_team: null # W&B team name
 wandb_project: null # W&B project name

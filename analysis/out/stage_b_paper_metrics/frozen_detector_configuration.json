@@ -1,0 +1,59 @@
+{
+  "variant_id": "wf15_m3_t5_ibon",
+  "detector_parameters": {
+    "W_fail": 15,
+    "m": 3,
+    "W_team": 5,
+    "inbound_suppression": "on"
+  },
+  "lifecycle_parameters": {
+    "w_inbound": 3,
+    "cooldown_steps": 5,
+    "rearm_steps": 3,
+    "max_events_per_episode": 2
+  },
+  "selection": {
+    "rule": "d = sqrt((1 - coverage_norm)^2 + res_at_10_norm^2)",
+    "normalisation": "min-max over the eligible set only",
+    "tie_breaks": [
+      "lower events_per_1000_steps",
+      "lexicographic variant_id"
+    ],
+    "eligible_set_size_8x8": 18,
+    "pareto_front_size_8x8": 13,
+    "normalisation_endpoints_8x8": {
+      "coverage_pct": [
+        21.0709,
+        25.6156
+      ],
+      "res_at_10_pct": [
+        8.2449,
+        10.8175
+      ]
+    },
+    "selected_rank": 1,
+    "selected_d": 0.607348,
+    "runner_up": "wf15_m2_t10_ibon",
+    "runner_up_d": 0.613259,
+    "margin": 0.005911,
+    "characterisation": "deterministic balanced choice under the frozen rule; NOT uniquely or statistically superior"
+  },
+  "provenance": {
+    "calibration_seed": 91,
+    "calibration_condition": "lbforaging:Foraging-8x8-2p-2f-coop-v3",
+    "held_out_seed": 99,
+    "held_out_condition": "lbforaging:Foraging-8x8-2p-2f-coop-v3",
+    "sensitivity_condition": "lbforaging:Foraging-10x10-3p-3f-v3",
+    "base_commit": "92ece20ac5cab9d2f9aef2c974ddd3268265e674",
+    "source_description": "base commit 92ece20 plus the documented selected-variant plumbing patch",
+    "protocol_erratum": "PROTOCOL ERRATUM 001 (2026-08-02): E4 operationalisation corrected post-run, pre-ranking"
+  },
+  "source_artifacts": {
+    "analysis/out/seed91_retry_20260802T112458Z/8x8/summary_8x8_seed91_2M_retry.json": "5f5ab48519159922a582f5cff96950cce4824e7a0b4b22b5c51101b47ae80cef",
+    "analysis/out/seed91_val10x10_20260802T151245Z/10x10/summary_10x10_seed91_2M_val.json": "48a3784cc5379503c2411308725808db65a69bd1925e6f9146e017b3f3d16993",
+    "analysis/out/seed99_heldout_20260802T221211Z/8x8/summary_8x8_seed99_2M_heldout.json": "4b3bf2cc163eadff113809839a5f0413b0cf9f55f0873154f981d1ce24a6d04c",
+    "analysis/out/seed91_val10x10_20260802T151245Z/10x10/validation_results_10x10.json": "a4918562414503a141fc799bca28a15b0bede55c7f8e43794593bb0ef762dca4",
+    "analysis/out/seed99_heldout_20260802T221211Z/8x8/seed99_validation_results.json": "ef20f2581f71b58bc818501a9903b7512a75bc034df36d7cba9e7c86bef3dab2",
+    "docs/project/selma_stage_b_selection_record.md": "50f1e05547063c90b8b1ec46781f359f3a156688ce841dc3acf300b71babd83c"
+  }
+}

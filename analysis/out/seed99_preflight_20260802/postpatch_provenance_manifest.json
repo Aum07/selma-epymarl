@@ -1,0 +1,127 @@
+{
+  "manifest_type": "Stage B seed-99 held-out validation \u2014 POST-PATCH PROVENANCE",
+  "created_utc": "2026-08-02T22:11:47Z",
+  "supersedes": null,
+  "preserves_unchanged": "analysis/out/seed99_preflight_20260802/preflight_provenance_manifest.json (decision-point manifest, left untouched)",
+  "validation_source_description": "base commit 92ece20 plus the documented selected-variant plumbing patch",
+  "base_commit": {
+    "head": "92ece20ac5cab9d2f9aef2c974ddd3268265e674",
+    "short": "92ece20",
+    "subject": "SELMA: exact load-event counter, event-based struggle detector (shadow mode), and baselines"
+  },
+  "working_tree_state": "contains the authorised patch; NOT a clean 92ece20 checkout",
+  "git_status_porcelain": [
+    " M src/config/default.yaml",
+    " M src/runners/episode_runner.py",
+    "?? docs/project/selma_seed91_recovery_and_rerun_plan.md",
+    "?? docs/project/selma_stage_b_10x10_validation_report.md",
+    "?? docs/project/selma_stage_b_selection_record.md",
+    "?? docs/project/selma_stage_c_implementation_contract.md",
+    "?? docs/selma_stage_b_detector_calibration_subsection.md",
+    "?? docs/selma_stage_b_seed91_10x10_calibration.md",
+    "?? docs/selma_stage_b_seed91_calibration.md",
+    "?? tests/test_selma_variant_selection.py"
+  ],
+  "tracked_modifications": [
+    " M src/config/default.yaml",
+    " M src/runners/episode_runner.py"
+  ],
+  "authorised_patch": {
+    "files": [
+      "src/config/default.yaml",
+      "src/runners/episode_runner.py"
+    ],
+    "diff_sha256": "4dc9b8b9b7c4a8fb3c715f195bb3f6a7731b032ee7591a1094a1649f5df5c409",
+    "diff_bytes": 3106,
+    "diff_text": "diff --git a/src/config/default.yaml b/src/config/default.yaml\nindex 24c5c31..6c2feb4 100644\n--- a/src/config/default.yaml\n+++ b/src/config/default.yaml\n@@ -28,6 +28,7 @@ selma_rearm_steps: 3 # SELMA Stage B lifecycle (calibration value, not a frozen\n selma_cooldown_steps: 5 # SELMA Stage B lifecycle (calibration value, not a frozen setting)\n selma_max_events_per_episode: 2 # SELMA Stage B lifecycle (calibration value, not frozen)\n selma_w_inbound: 3 # SELMA Stage B inbound-help window (shadow comparison only)\n+selma_variant_id: \"\" # SELMA Stage B: restrict the shadow bank to one variant id (empty = all 48, unchanged)\n use_wandb: False # Log results to W&B\n wandb_team: null # W&B team name\n wandb_project: null # W&B project name\ndiff --git a/src/runners/episode_runner.py b/src/runners/episode_runner.py\nindex 42fa338..a4cc727 100644\n--- a/src/runners/episode_runner.py\n+++ b/src/runners/episode_runner.py\n@@ -56,9 +56,31 @@ class EpisodeRunner:\n         self.selma_bank = None\n         self.selma_shadow_writer = None\n         if getattr(self.args, \"selma_mode\", \"off\") == \"shadow\":\n-            from selma.detector import ShadowDetectorBank\n+            from selma.detector import ShadowDetectorBank, build_variant_grid\n             from selma.shadow_log import ShadowCsvWriter\n \n+            # SELMA: optional single-variant restriction. Empty (the default) keeps the\n+            # full 48-variant grid with its original ordering and contents. A non-empty\n+            # id selects that variant *from* build_variant_grid(), so its parameters are\n+            # never reconstructed here; an unknown or ambiguous id fails loudly before\n+            # training rather than silently falling back to all 48.\n+            selma_variant_id = str(getattr(self.args, \"selma_variant_id\", \"\") or \"\")\n+            if selma_variant_id:\n+                all_variants = build_variant_grid()\n+                matches = [v for v in all_variants if v.variant_id == selma_variant_id]\n+                if len(matches) != 1:\n+                    raise ValueError(\n+                        \"selma_variant_id={!r} matched {} variants in \"\n+                        \"build_variant_grid(); expected exactly 1. Known ids: {}\".format(\n+                            selma_variant_id,\n+                            len(matches),\n+                            \", \".join(v.variant_id for v in all_variants),\n+                        )\n+                    )\n+                selma_variants = tuple(matches)\n+            else:\n+                selma_variants = None\n+\n             grid_shape = (\n                 self.env.get_selma_grid_shape()\n                 if hasattr(self.env, \"get_selma_grid_shape\")\n@@ -66,6 +88,7 @@ class EpisodeRunner:\n             )\n             if grid_shape is not None:\n                 self.selma_bank = ShadowDetectorBank(\n+                    variants=selma_variants,\n                     # args.n_agents is not populated until run_sequential has\n                     # called get_env_info(), so take it from the env directly.\n                     n_agents=self.env.get_env_info()[\"n_agents\"],\n",
+    "file_sha256": {
+      "src/config/default.yaml": "af84edde05874520bb27b5b1130208c5b161e6f1eb35bad77d85d0ba24a9bfcc",
+      "src/runners/episode_runner.py": "442f0b69a2be8670dc4b6682147b3d3eaa7e17607c3e21dbb40fb03415c5f311"
+    }
+  },
+  "detector_logic_unchanged": {
+    "src/selma/detector.py": {
+      "modified": false,
+      "sha256": "f1aeba5c0dd0bef2e37a84968b95c6730d11acf89c31ec5d057db4028b7eea5c"
+    },
+    "src/selma/shadow_log.py": {
+      "modified": false,
+      "sha256": "b7703fe8f8a2a09dbd2a074b1eb75e0ba254ff2b5e39d62df9ce14706732b6ad"
+    },
+    "src/selma/coalition.py": {
+      "modified": false,
+      "sha256": "8eb6ae62b30d494678927301ae8177547aa28868ae895bc1644dca9be9014b7d"
+    },
+    "src/selma/types.py": {
+      "modified": false,
+      "sha256": "d147c9f6215687df9ee4a925c5e807521f33a0bb811f9202ce1c71d8b69a2ae4"
+    },
+    "confirmation": "no detector, metric, lifecycle, environment or training logic was changed"
+  },
+  "tests": {
+    "new_file": "tests/test_selma_variant_selection.py",
+    "new_tests_passed": 22,
+    "full_suite": "134 passed, 0 failed (112 pre-existing + 22 new)",
+    "coverage": [
+      "backward compatibility: empty -> all 48, ids/params/ordering equal build_variant_grid()",
+      "selected-only: wf15_m3_t5_ibon -> exactly 1 variant, W_fail=15 m=3 W_team=5 inbound=on",
+      "invalid input: 5 bad ids raise ValueError; never falls back to 48",
+      "behavioural equivalence: identical deterministic trace; full bank filtered to the frozen id equals selected-only output exactly (44 rows, summary and rows)"
+    ]
+  },
+  "smoke_test": {
+    "seed": 7,
+    "note": "seed 99 deliberately NOT used",
+    "t_max": 6000,
+    "condition": "lbforaging:Foraging-8x8-2p-2f-coop-v3",
+    "exit_code": 0,
+    "distinct_variant_ids_in_shadow_csv": [
+      "wf15_m3_t5_ibon"
+    ],
+    "no_other_variant_id": true,
+    "summary_variant_count": 1,
+    "zero_guarantees": {
+      "provider_call_count": 0,
+      "query_count": 0,
+      "active_subgoal_count": 0,
+      "total_shaping_reward": 0.0
+    },
+    "greedy_eval_excluded": {
+      "train_episodes": 121,
+      "greedy_episodes": 300,
+      "episodes_seen": 121,
+      "detector_observed_only_training": true
+    },
+    "reward_path": "post_transition_data['reward'] set from raw env reward (episode_runner.py:272); no shaping term exists in shadow mode; runner asserts total_shaping_reward==0.0 each episode",
+    "artifacts": "analysis/out/smoke_variantsel_20260802/"
+  },
+  "frozen_configuration": {
+    "variant_id": "wf15_m3_t5_ibon",
+    "W_fail": 15,
+    "m": 3,
+    "W_team": 5,
+    "inbound": "on",
+    "w_inbound": 3,
+    "cooldown_steps": 5,
+    "rearm_steps": 3,
+    "max_events_per_episode": 2,
+    "source": "docs/project/selma_stage_b_selection_record.md \u00a73, transcribed verbatim"
+  },
+  "resolved_seed99_configuration": {
+    "env": "gymma",
+    "env_args.key": "lbforaging:Foraging-8x8-2p-2f-coop-v3",
+    "env_args.time_limit": 50,
+    "seed": 99,
+    "t_max": 2000000,
+    "use_cuda": false,
+    "config": "qmix",
+    "learner": "q_learner",
+    "selma_mode": "shadow",
+    "selma_variant_id": "wf15_m3_t5_ibon",
+    "selma_w_inbound": 3,
+    "selma_cooldown_steps": 5,
+    "selma_rearm_steps": 3,
+    "selma_max_events_per_episode": 2,
+    "save_model": false
+  }
+}

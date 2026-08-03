@@ -1,0 +1,410 @@
+{
+  "report_type": "Stage B held-out seed-99 validation of the frozen configuration",
+  "variant": "wf15_m3_t5_ibon",
+  "condition": "lbforaging:Foraging-8x8-2p-2f-coop-v3",
+  "validation_source": "base commit 92ece20 plus the documented selected-variant plumbing patch",
+  "run_id": "seed99_heldout_20260802T221211Z",
+  "completion": {
+    "exit_code": 0,
+    "status": "COMPLETED",
+    "final_t_env": 2000004,
+    "t_max": 2000000,
+    "runtime_seconds": 4157,
+    "runtime_human": "1h 09m 13s",
+    "raw_csv_bytes": 93640389,
+    "raw_csv_rows": 262317
+  },
+  "integrity": {
+    "malformed_rows": 0,
+    "truncated_final_record": false,
+    "nul_bytes": 0,
+    "header_fields": 55,
+    "files_stable": true,
+    "open_writers": 0,
+    "manifest_correspondence": "PASS (15/15 configuration fields)",
+    "only_frozen_variant_in_outputs": true,
+    "summary_variant_count": 1
+  },
+  "reconciliation": {
+    "final_events_csv": 10862,
+    "final_events_summary": 10862,
+    "match": true,
+    "recipient_distribution_csv": {
+      "2": 10862
+    },
+    "recipient_distribution_summary": {
+      "2": 10862
+    },
+    "match_recipients": true,
+    "coalesced_event_rows": 10862,
+    "distinct_event_ids": 10862,
+    "surviving_duplicate_event_ids": 0,
+    "raw_candidate_rows": 251455,
+    "episodes_with_rows": 11812
+  },
+  "invariants": {
+    "checked": 15,
+    "passed": 15,
+    "failed": 0
+  },
+  "safeguards": {
+    "provider_call_count": 0,
+    "query_count": 0,
+    "active_subgoal_count": 0,
+    "total_shaping_reward": 0.0,
+    "training_reward_equals_raw_team_reward": true,
+    "training_reward_evidence": "shadow mode has no shaping write-path; reward inserted raw at episode_runner.py:272; runner asserts total_shaping_reward==0.0 per episode; suite tests test_shaping_reward_is_exactly_zero_on_every_transition and test_off_vs_shadow_ordinary_csv_is_byte_identical pass",
+    "detector_absent_from_greedy_evaluation": true,
+    "train_episodes": 40020,
+    "greedy_episodes": 4000,
+    "episodes_seen": 40020,
+    "no_shadow_rows_from_test_episodes": true
+  },
+  "seed99_metrics": {
+    "episodes": 40020,
+    "obs": 2000004,
+    "gate_open_pct": 94.10089764577233,
+    "gate_open_steps": 1731385,
+    "final": 10862,
+    "per1k": 5.430989138021724,
+    "perep": 0.2714142928535732,
+    "coverage": 24.417791104447772,
+    "ep0": 30248,
+    "ep1": 8682,
+    "epmulti": 1090,
+    "cap_pct": 2.7236381809095453,
+    "budget": 98,
+    "raw": 251455,
+    "gate_supp": 2353,
+    "after_gate": 249102,
+    "inb_supp": 20652,
+    "after_inb": 228450,
+    "latch": 196004,
+    "cool": 4621,
+    "rearm": 16865,
+    "coalesced": 0,
+    "r2": 10862,
+    "r3": 0,
+    "res5": 6.257175660160735,
+    "res10": 10.721402949382224,
+    "resolved5": 654,
+    "unres5": 9798,
+    "den5": 10452,
+    "cens5": 410,
+    "resolved10": 1076,
+    "unres10": 8960,
+    "den10": 10036,
+    "cens10": 826,
+    "resolved_food_gone": 2231,
+    "resolved_cond_false": 4289,
+    "early": 70.21727122076966,
+    "mid": 17.077886208801324,
+    "late": 12.704842570429019,
+    "early_n": 7627,
+    "mid_n": 1855,
+    "late_n": 1380
+  },
+  "seed91_metrics": {
+    "episodes": 40003,
+    "obs": 2000046,
+    "gate_open_pct": 96.11474570578588,
+    "gate_open_steps": 1768544,
+    "final": 10716,
+    "per1k": 5.357876768834317,
+    "perep": 0.2678799090068245,
+    "coverage": 23.600729945254106,
+    "ep0": 30562,
+    "ep1": 8166,
+    "epmulti": 1275,
+    "cap_pct": 3.187260955428343,
+    "budget": 172,
+    "raw": 230268,
+    "gate_supp": 1421,
+    "after_gate": 228847,
+    "inb_supp": 19871,
+    "after_inb": 208976,
+    "latch": 177660,
+    "cool": 4273,
+    "rearm": 16155,
+    "coalesced": 0,
+    "r2": 10716,
+    "r3": 0,
+    "res5": 4.491748852651108,
+    "res10": 9.312820512820513,
+    "resolved5": 460,
+    "unres5": 9781,
+    "den5": 10241,
+    "cens5": 475,
+    "resolved10": 908,
+    "unres10": 8842,
+    "den10": 9750,
+    "cens10": 966,
+    "resolved_food_gone": 1892,
+    "resolved_cond_false": 4724,
+    "early": 65.52818215752146,
+    "mid": 19.148936170212767,
+    "late": 15.32288167226577,
+    "early_n": 7022,
+    "mid_n": 2052,
+    "late_n": 1642
+  },
+  "comparison": {
+    "episodes": {
+      "seed91": 40003,
+      "seed99": 40020,
+      "abs_diff": 17,
+      "ratio": 1.0004249681273905
+    },
+    "obs": {
+      "seed91": 2000046,
+      "seed99": 2000004,
+      "abs_diff": -42,
+      "ratio": 0.9999790004829889
+    },
+    "gate_open_pct": {
+      "seed91": 96.11474570578588,
+      "seed99": 94.10089764577233,
+      "abs_diff": -2.0138480600135438,
+      "ratio": 0.9790474599373329
+    },
+    "gate_open_steps": {
+      "seed91": 1768544,
+      "seed99": 1731385,
+      "abs_diff": -37159,
+      "ratio": 0.9789889310076537
+    },
+    "final": {
+      "seed91": 10716,
+      "seed99": 10862,
+      "abs_diff": 146,
+      "ratio": 1.013624486748787
+    },
+    "per1k": {
+      "seed91": 5.357876768834317,
+      "seed99": 5.430989138021724,
+      "abs_diff": 0.07311236918740693,
+      "ratio": 1.0136457728204364
+    },
+    "perep": {
+      "seed91": 0.2678799090068245,
+      "seed99": 0.2714142928535732,
+      "abs_diff": 0.003534383846748701,
+      "ratio": 1.0131939116294781
+    },
+    "coverage": {
+      "seed91": 23.600729945254106,
+      "seed99": 24.417791104447772,
+      "abs_diff": 0.817061159193667,
+      "ratio": 1.0346201647613857
+    },
+    "ep0": {
+      "seed91": 30562,
+      "seed99": 30248,
+      "abs_diff": -314,
+      "ratio": 0.9897258032851253
+    },
+    "ep1": {
+      "seed91": 8166,
+      "seed99": 8682,
+      "abs_diff": 516,
+      "ratio": 1.0631888317413667
+    },
+    "epmulti": {
+      "seed91": 1275,
+      "seed99": 1090,
+      "abs_diff": -185,
+      "ratio": 0.8549019607843137
+    },
+    "cap_pct": {
+      "seed91": 3.187260955428343,
+      "seed99": 2.7236381809095453,
+      "abs_diff": -0.4636227745187975,
+      "ratio": 0.8545388090268592
+    },
+    "budget": {
+      "seed91": 172,
+      "seed99": 98,
+      "abs_diff": -74,
+      "ratio": 0.5697674418604651
+    },
+    "raw": {
+      "seed91": 230268,
+      "seed99": 251455,
+      "abs_diff": 21187,
+      "ratio": 1.0920101794430837
+    },
+    "gate_supp": {
+      "seed91": 1421,
+      "seed99": 2353,
+      "abs_diff": 932,
+      "ratio": 1.6558761435608726
+    },
+    "after_gate": {
+      "seed91": 228847,
+      "seed99": 249102,
+      "abs_diff": 20255,
+      "ratio": 1.0885089164376198
+    },
+    "inb_supp": {
+      "seed91": 19871,
+      "seed99": 20652,
+      "abs_diff": 781,
+      "ratio": 1.039303507624176
+    },
+    "after_inb": {
+      "seed91": 208976,
+      "seed99": 228450,
+      "abs_diff": 19474,
+      "ratio": 1.0931877344766863
+    },
+    "latch": {
+      "seed91": 177660,
+      "seed99": 196004,
+      "abs_diff": 18344,
+      "ratio": 1.103253405381065
+    },
+    "cool": {
+      "seed91": 4273,
+      "seed99": 4621,
+      "abs_diff": 348,
+      "ratio": 1.081441610109993
+    },
+    "rearm": {
+      "seed91": 16155,
+      "seed99": 16865,
+      "abs_diff": 710,
+      "ratio": 1.0439492417208294
+    },
+    "coalesced": {
+      "seed91": 0,
+      "seed99": 0,
+      "abs_diff": 0,
+      "ratio": NaN
+    },
+    "r2": {
+      "seed91": 10716,
+      "seed99": 10862,
+      "abs_diff": 146,
+      "ratio": 1.013624486748787
+    },
+    "r3": {
+      "seed91": 0,
+      "seed99": 0,
+      "abs_diff": 0,
+      "ratio": NaN
+    },
+    "res5": {
+      "seed91": 4.491748852651108,
+      "seed99": 6.257175660160735,
+      "abs_diff": 1.7654268075096269,
+      "ratio": 1.393037737732741
+    },
+    "res10": {
+      "seed91": 9.312820512820513,
+      "seed99": 10.721402949382224,
+      "abs_diff": 1.4085824365617103,
+      "ratio": 1.1512519686836638
+    },
+    "resolved5": {
+      "seed91": 460,
+      "seed99": 654,
+      "abs_diff": 194,
+      "ratio": 1.4217391304347826
+    },
+    "unres5": {
+      "seed91": 9781,
+      "seed99": 9798,
+      "abs_diff": 17,
+      "ratio": 1.0017380635926796
+    },
+    "den5": {
+      "seed91": 10241,
+      "seed99": 10452,
+      "abs_diff": 211,
+      "ratio": 1.0206034566936824
+    },
+    "cens5": {
+      "seed91": 475,
+      "seed99": 410,
+      "abs_diff": -65,
+      "ratio": 0.8631578947368421
+    },
+    "resolved10": {
+      "seed91": 908,
+      "seed99": 1076,
+      "abs_diff": 168,
+      "ratio": 1.1850220264317182
+    },
+    "unres10": {
+      "seed91": 8842,
+      "seed99": 8960,
+      "abs_diff": 118,
+      "ratio": 1.0133453969690116
+    },
+    "den10": {
+      "seed91": 9750,
+      "seed99": 10036,
+      "abs_diff": 286,
+      "ratio": 1.0293333333333334
+    },
+    "cens10": {
+      "seed91": 966,
+      "seed99": 826,
+      "abs_diff": -140,
+      "ratio": 0.855072463768116
+    },
+    "resolved_food_gone": {
+      "seed91": 1892,
+      "seed99": 2231,
+      "abs_diff": 339,
+      "ratio": 1.1791754756871036
+    },
+    "resolved_cond_false": {
+      "seed91": 4724,
+      "seed99": 4289,
+      "abs_diff": -435,
+      "ratio": 0.9079170194750211
+    },
+    "early": {
+      "seed91": 65.52818215752146,
+      "seed99": 70.21727122076966,
+      "abs_diff": 4.689089063248204,
+      "ratio": 1.0715583571657188
+    },
+    "mid": {
+      "seed91": 19.148936170212767,
+      "seed99": 17.077886208801324,
+      "abs_diff": -2.0710499614114433,
+      "ratio": 0.8918451686818468
+    },
+    "late": {
+      "seed91": 15.32288167226577,
+      "seed99": 12.704842570429019,
+      "abs_diff": -2.618039101836752,
+      "ratio": 0.8291418573977916
+    },
+    "early_n": {
+      "seed91": 7022,
+      "seed99": 7627,
+      "abs_diff": 605,
+      "ratio": 1.0861577898034749
+    },
+    "mid_n": {
+      "seed91": 2052,
+      "seed99": 1855,
+      "abs_diff": -197,
+      "ratio": 0.9039961013645225
+    },
+    "late_n": {
+      "seed91": 1642,
+      "seed99": 1380,
+      "abs_diff": -262,
+      "ratio": 0.8404384896467723
+    }
+  },
+  "interpretation": {
+    "structural": "all structural and reconciliation checks pass on the held-out seed",
+    "variation": "technically valid between-seed variation, reported as a result, not a failure",
+    "no_retuning": "no ranking, no endpoint recomputation, no alternative variants inspected, no retuning, no post-hoc pass threshold invented"
+  }
+}

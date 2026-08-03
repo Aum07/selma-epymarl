@@ -1,0 +1,104 @@
+artifact,field,publication_status,disposition,role_or_reason
+summary_json,candidates_after_team_gate,YES,reported in the metric dictionary,
+summary_json,censored_within_10,YES,reported in the metric dictionary,
+summary_json,censored_within_5,YES,reported in the metric dictionary,
+summary_json,eligible_steps,YES,reported in the metric dictionary,
+summary_json,episodes_with_0_events,YES,reported in the metric dictionary,
+summary_json,episodes_with_1_event,YES,reported in the metric dictionary,
+summary_json,episodes_with_multiple_events,YES,reported in the metric dictionary,
+summary_json,events_by_episode_phase,YES,reported in the metric dictionary,
+summary_json,events_per_1000_steps,YES,reported in the metric dictionary,
+summary_json,events_per_episode,YES,reported in the metric dictionary,
+summary_json,events_per_episode_hist,YES,reported in the metric dictionary,
+summary_json,final_events,YES,reported in the metric dictionary,
+summary_json,gate_open_percentage,YES,reported in the metric dictionary,
+summary_json,gate_open_steps,YES,reported in the metric dictionary,
+summary_json,inbound_variant,YES,reported in the metric dictionary,
+summary_json,incomplete_team_window_steps,YES,reported in the metric dictionary,
+summary_json,m,YES,reported in the metric dictionary,
+summary_json,natural_resolution_rate_10,YES,reported in the metric dictionary,
+summary_json,natural_resolution_rate_5,YES,reported in the metric dictionary,
+summary_json,observed_steps,YES,reported in the metric dictionary,
+summary_json,proportion_raw_candidates_suppressed_by_gate,YES,reported in the metric dictionary,
+summary_json,raw_candidates,YES,reported in the metric dictionary,
+summary_json,raw_candidates_after_inbound,YES,reported in the metric dictionary,
+summary_json,recipient_count_distribution,YES,reported in the metric dictionary,
+summary_json,resolved_condition_false,YES,reported in the metric dictionary,
+summary_json,resolved_food_gone,YES,reported in the metric dictionary,
+summary_json,resolved_within_10,YES,reported in the metric dictionary,
+summary_json,resolved_within_5,YES,reported in the metric dictionary,
+summary_json,same_food_coalesced,YES,reported in the metric dictionary,
+summary_json,semantically_invalid_candidates,YES,reported in the metric dictionary,
+summary_json,semantically_invalid_events,YES,reported in the metric dictionary,
+summary_json,suppressed_by_budget,YES,reported in the metric dictionary,
+summary_json,suppressed_by_cooldown,YES,reported in the metric dictionary,
+summary_json,suppressed_by_inbound,YES,reported in the metric dictionary,
+summary_json,suppressed_by_incomplete_team_window,YES,reported in the metric dictionary,
+summary_json,suppressed_by_latch,YES,reported in the metric dictionary,
+summary_json,suppressed_by_rearm,YES,reported in the metric dictionary,
+summary_json,suppressed_by_team_gate,YES,reported in the metric dictionary,
+summary_json,team_gate_filtering_contribution,YES,reported in the metric dictionary,
+summary_json,team_gate_retained,YES,reported in the metric dictionary,
+summary_json,team_gate_suppressed,YES,reported in the metric dictionary,
+summary_json,team_gate_vacuity,YES,reported in the metric dictionary,
+summary_json,team_gate_variant,YES,reported in the metric dictionary,
+summary_json,unresolved_within_10,YES,reported in the metric dictionary,
+summary_json,unresolved_within_5,YES,reported in the metric dictionary,
+summary_json,valid_denominator_10,YES,reported in the metric dictionary,
+summary_json,valid_denominator_5,YES,reported in the metric dictionary,
+summary_json,w_fail,YES,reported in the metric dictionary,
+raw_csv,row_type,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",discriminates raw_candidate vs coalesced_event; used to compute every aggregate
+raw_csv,condition,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",run provenance
+raw_csv,seed,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",run provenance
+raw_csv,t_env,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",run provenance / time index
+raw_csv,episode_id,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",event identity component; used for greedy-eval exclusion check
+raw_csv,episode_step,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",event identity component; used for episode-phase assignment
+raw_csv,variant_id,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",variant scoping; verified to be the frozen variant only
+raw_csv,w_fail,YES,reported in the metric dictionary,configuration echo per row
+raw_csv,m,YES,reported in the metric dictionary,configuration echo per row
+raw_csv,team_gate_variant,YES,reported in the metric dictionary,configuration echo per row
+raw_csv,team_gate_open,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",per-step gate state; aggregated into gate_open_steps
+raw_csv,inbound_variant,YES,reported in the metric dictionary,configuration echo per row
+raw_csv,raw_team_reward,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",raw environment reward carried for audit; never used to gate
+raw_csv,food_removed,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",resolution-cause input; aggregated into resolved_food_gone
+raw_csv,progress,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",team-progress signal; aggregated into the gate state
+raw_csv,trigger_agent_ids,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric","per-event context; Stage C input, not a Stage B aggregate"
+raw_csv,food_id,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",per-event target identity; event_id component
+raw_csv,food_position,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",per-event target location; event_id component
+raw_csv,food_level,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",per-event target level; coalition-feasibility input
+raw_csv,failed_load_count_in_window,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",per-candidate rule input; aggregated into raw_candidates
+raw_csv,loader_ids,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",per-event coalition context; Stage C input
+raw_csv,loader_levels,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",per-event coalition context; Stage C input
+raw_csv,loader_level_sum,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",per-event coalition capability; feasibility input
+raw_csv,level_deficit,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",per-event capability gap; Stage C input
+raw_csv,required_extra_level,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",per-event capability gap; Stage C input
+raw_csv,helper_ids,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",per-event helper set; Stage C input
+raw_csv,helper_levels,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",per-event helper set; Stage C input
+raw_csv,helper_distances,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",per-event helper cost; Stage C input
+raw_csv,total_helper_distance,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",per-event helper cost; Stage C input
+raw_csv,recipient_ids,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",per-event recipients; aggregated into recipient_count_distribution
+raw_csv,candidate_loading_cells,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",per-event admissible cells; Stage C input
+raw_csv,selected_cell_assignment,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",per-event deterministic assignment; Stage C input
+raw_csv,tiebreak_evidence,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",per-event determinism audit trail
+raw_csv,n_feasible_subsets,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",per-event validator context
+raw_csv,coalition_feasible,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",per-event feasibility gate; aggregated into semantically_invalid_*
+raw_csv,coalition_reason,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",per-event feasibility explanation
+raw_csv,trigger_distance,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",per-event geometry diagnostic; explicitly non-gating by design
+raw_csv,trigger_distance_delta,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",per-event geometry diagnostic; explicitly non-gating by design
+raw_csv,inbound_help,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",per-step inbound flag; aggregated into suppressed_by_inbound
+raw_csv,inbound_helper_ids,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",per-event inbound detail
+raw_csv,inbound_start_distances,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",per-event inbound detail
+raw_csv,inbound_end_distances,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",per-event inbound detail
+raw_csv,inbound_distance_deltas,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",per-event inbound detail
+raw_csv,raw_would_fire,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",per-candidate pre-suppression flag; aggregated into raw_candidates
+raw_csv,would_fire_after_inbound,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",per-candidate post-inbound flag; aggregated into raw_candidates_after_inbound
+raw_csv,latched,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",per-candidate latch state; aggregated into suppressed_by_latch
+raw_csv,cooldown_remaining,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",per-candidate cooldown state; aggregated into suppressed_by_cooldown
+raw_csv,rearm_false_streak,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",per-candidate rearm state; aggregated into suppressed_by_rearm
+raw_csv,events_used,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",per-episode budget counter; aggregated into suppressed_by_budget
+raw_csv,event_budget,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",per-episode cap echo (=2)
+raw_csv,coalesced_candidate_count,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",per-event coalescing size; aggregated into same_food_coalesced
+raw_csv,suppression_reason,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",per-candidate suppression label; aggregated into the suppression ledger
+raw_csv,resolved_within_5,YES,reported in the metric dictionary,per-event resolution label; aggregated into resolved_within_5
+raw_csv,resolved_within_10,YES,reported in the metric dictionary,per-event resolution label; aggregated into resolved_within_10
+raw_csv,event_id,aggregated,"per-row field; enters the paper through an aggregate, not as a standalone metric",event identity; used for the surviving-duplicate integrity check

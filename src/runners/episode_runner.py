@@ -56,8 +56,30 @@ class EpisodeRunner:
         self.selma_bank = None
         self.selma_shadow_writer = None
         if getattr(self.args, "selma_mode", "off") == "shadow":
-            from selma.detector import ShadowDetectorBank
+            from selma.detector import ShadowDetectorBank, build_variant_grid
             from selma.shadow_log import ShadowCsvWriter
+
+            # SELMA: optional single-variant restriction. Empty (the default) keeps the
+            # full 48-variant grid with its original ordering and contents. A non-empty
+            # id selects that variant *from* build_variant_grid(), so its parameters are
+            # never reconstructed here; an unknown or ambiguous id fails loudly before
+            # training rather than silently falling back to all 48.
+            selma_variant_id = str(getattr(self.args, "selma_variant_id", "") or "")
+            if selma_variant_id:
+                all_variants = build_variant_grid()
+                matches = [v for v in all_variants if v.variant_id == selma_variant_id]
+                if len(matches) != 1:
+                    raise ValueError(
+                        "selma_variant_id={!r} matched {} variants in "
+                        "build_variant_grid(); expected exactly 1. Known ids: {}".format(
+                            selma_variant_id,
+                            len(matches),
+                            ", ".join(v.variant_id for v in all_variants),
+                        )
+                    )
+                selma_variants = tuple(matches)
+            else:
+                selma_variants = None
 
             grid_shape = (
                 self.env.get_selma_grid_shape()
@@ -66,6 +88,7 @@ class EpisodeRunner:
             )
             if grid_shape is not None:
                 self.selma_bank = ShadowDetectorBank(
+                    variants=selma_variants,
                     # args.n_agents is not populated until run_sequential has
                     # called get_env_info(), so take it from the env directly.
                     n_agents=self.env.get_env_info()["n_agents"],
