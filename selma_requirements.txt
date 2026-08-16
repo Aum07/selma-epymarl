@@ -1,0 +1,16 @@
+# SELMA Stage D: the live guidance provider.
+#
+# Optional by construction. The OpenAI SDK is imported lazily, inside
+# src/selma/openai_provider.py's client factory, so selma_mode=off/shadow and
+# selma_provider=deterministic_mock runs never import it and a base install
+# (pip install -r requirements.txt) must not contain it -- that absence is what
+# tests/test_selma_stage_d_provider.py's no-SDK-import guarantee rests on.
+#
+# Install only when selma_provider=openai is actually used:
+#     pip install -r selma_requirements.txt
+#
+# Pinned exactly. The adapter sends Responses API fields (text.format json_schema
+# strict, reasoning.effort, store, max_output_tokens) whose acceptance is a
+# property of a specific SDK version, so a floating range would make a recorded
+# live result unreproducible.
+openai==3.1.0

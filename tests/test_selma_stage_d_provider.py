@@ -404,3 +404,125 @@ def test_no_heuristic_fallback_is_ever_substituted():
                    [api_response(good_payload(request), status="incomplete")]):
         p = provider(*script, max_retries=0)
         assert p.query(request) is None
+
+
+# ==========================================================================
+# 6. runtime-prompt audit (Stage D live-pilot, 2026-08-17)
+# ==========================================================================
+#
+# The pre-pilot audit of the *actual runtime prompt* (not merely its version
+# name) found two defects that made the offered choice ungrounded:
+#
+#   1. the candidate ids were opaque strings. ``a1@3,4`` was never explained
+#      anywhere in the prompt, so the model was asked to choose between tokens
+#      whose meaning -- which agent, which cell -- it had to guess;
+#   2. the LBF collection rule was never stated, so the prompt never said why a
+#      helper is needed or what makes an assignment good.
+#
+# Both are prompt-only corrections: the response schema, the validator and the
+# key composition are untouched, and no new authority is given to the model.
+# ``PROMPT_VERSION`` is bumped, which changes every cache digest, because
+# ``prompt_version`` is part of the canonical key.
+
+
+def test_prompt_states_the_lbf_collection_rule():
+    """The decision is meaningless unless the level-sum rule is stated."""
+    from selma.openai_provider import SYSTEM_PROMPT
+
+    text = SYSTEM_PROMPT.lower()
+    assert "level-based foraging" in text
+    assert "adjacent" in text
+    assert "sum" in text and "level" in text
+    assert "load" in text
+
+
+def test_prompt_grounds_every_candidate_id_to_its_agent_and_cell():
+    """Every offered id is spelled out as (agent, loading cell) in the prompt."""
+    request = make_request()
+    ids = candidate_assignment_ids(request)
+    payload = json.loads(build_prompt(request, ids))
+
+    candidates = payload["candidates"]
+    assert [c["assignment_id"] for c in candidates] == list(ids)
+    for entry in candidates:
+        agent_id, cell = parse_assignment_id(entry["assignment_id"])
+        assert entry["agent_id"] == agent_id
+        assert tuple(entry["loading_cell"]) == cell
+
+
+def test_prompt_offers_genuinely_distinct_alternatives_per_agent():
+    """A recipient with several offered cells must see all of them."""
+    request = make_request()
+    ids = candidate_assignment_ids(request)
+    payload = json.loads(build_prompt(request, ids))
+
+    per_agent = {}
+    for entry in payload["candidates"]:
+        per_agent.setdefault(entry["agent_id"], set()).add(tuple(entry["loading_cell"]))
+    assert per_agent, "no candidates were described"
+    assert any(len(cells) > 1 for cells in per_agent.values())
+
+
+def test_prompt_states_the_id_format_and_how_many_ids_to_return():
+    request = make_request()
+    ids = candidate_assignment_ids(request)
+    payload = json.loads(build_prompt(request, ids))
+
+    instructions = payload["instructions"]
+    assert "a<agent_id>@<row>,<col>" in instructions
+    assert str(len(request.recipient_agents)) in instructions
+
+
+def test_prompt_carries_no_episode_identity_or_run_metadata():
+    """Nothing episode-scoped or run-scoped may reach the model."""
+    request = make_request()
+    text = build_prompt(request, candidate_assignment_ids(request))
+    payload = json.loads(text)
+
+    for leaked in ("event_id", "food_id", "episode_id", "seed", "t_env",
+                   "episode_step", "created_at", "timestamp", "run_identity"):
+        assert leaked not in payload
+    # the detector's event_id embeds the episode number; it must not appear
+    # anywhere in the serialised prompt, at any nesting depth.
+    assert request.event_id not in text
+    assert "ep7" not in text
+
+
+def test_prompt_is_still_deterministic_and_canonical():
+    request = make_request()
+    ids = candidate_assignment_ids(request)
+    first = build_prompt(request, ids)
+    assert first == build_prompt(request, ids)
+    # canonical: sorted keys, no insignificant whitespace
+    assert first == json.dumps(json.loads(first), sort_keys=True,
+                               separators=(",", ":"))
+
+
+def test_prompt_version_is_bumped_and_invalidates_old_cache_entries():
+    """A prompt change must change the cache digest, or stale answers survive."""
+    from selma.cache import build_cache_key, canonical_json, key_digest
+    from selma.openai_provider import PROMPT_VERSION as CURRENT
+
+    assert CURRENT == "selma_guidance_prompt_v2"
+
+    request = make_request()
+    context = dict(condition="c", grid_shape=(8, 8), provider="openai",
+                   model_snapshot=MODEL_SNAPSHOT, reasoning_effort="none",
+                   response_schema_version=RESPONSE_SCHEMA_VERSION)
+    old = key_digest(canonical_json(build_cache_key(
+        request, prompt_version="selma_guidance_prompt_v1", **context)))
+    new = key_digest(canonical_json(build_cache_key(
+        request, prompt_version=CURRENT, **context)))
+    assert old != new
+
+
+def test_response_schema_is_unchanged_by_the_prompt_correction():
+    """The model gains no new authority: same schema, same version."""
+    request = make_request()
+    ids = candidate_assignment_ids(request)
+    schema = response_json_schema(ids)
+
+    assert RESPONSE_SCHEMA_VERSION == "selma_guidance_response_schema_v1"
+    assert set(schema["properties"]) == {"assignment_ids", "confidence"}
+    assert schema["additionalProperties"] is False
+    assert schema["properties"]["assignment_ids"]["items"]["enum"] == list(ids)

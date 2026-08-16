@@ -68,7 +68,7 @@ PROVIDER_ID = "openai"
 API_SURFACE = "responses"
 MODEL_SNAPSHOT = "gpt-5.4-nano-2026-03-17"
 REASONING_EFFORT = "none"
-PROMPT_VERSION = "selma_guidance_prompt_v1"
+PROMPT_VERSION = "selma_guidance_prompt_v2"
 RESPONSE_SCHEMA_VERSION = "selma_guidance_response_schema_v1"
 API_KEY_ENV = "OPENAI_API_KEY"
 
@@ -78,11 +78,20 @@ DEFAULT_BACKOFF_S = 0.5
 DEFAULT_MAX_OUTPUT_TOKENS = 512
 
 SYSTEM_PROMPT = (
-    "You assign helper roles in a Level-Based Foraging grid world. "
-    "You may ONLY choose from the candidate assignment ids supplied in the "
-    "request: exactly one id per recipient agent, no duplicates, no invented "
-    "ids, no coordinates of your own. You do not decide rewards, discounting, "
-    "shaping scale or subgoal lifetime."
+    "You are a coordination adviser for Level-Based Foraging (LBF), a "
+    "grid-world task. The rules that matter here: every food and every agent "
+    "has an integer level. A food is collected only when agents standing in "
+    "cells orthogonally adjacent to that food all play the LOAD action on the "
+    "same step and the sum of their levels is at least the food's level. An "
+    "agent whose own level is below the food's level therefore can never "
+    "collect it alone; it needs helpers on the other adjacent cells. "
+    "Your decision is exactly this: for each recipient agent, which adjacent "
+    "loading cell should it move to and load from. You express that decision "
+    "by choosing candidate assignment ids that the request supplies. "
+    "You may ONLY choose from candidate_assignment_ids: exactly one id per "
+    "recipient agent, no duplicates, no invented ids, and no coordinates of "
+    "your own. You do not decide rewards, discounting, shaping scale or "
+    "subgoal lifetime."
 )
 
 
@@ -131,7 +140,29 @@ def response_json_schema(assignment_ids):
 
 
 def build_prompt(request, assignment_ids):
-    """Deterministic user message. Pure function of the code-built request."""
+    """Deterministic user message. Pure function of the code-built request.
+
+    Prompt v2 adds ``candidates``: each offered id spelled out as the (agent,
+    loading cell) pair it denotes. v1 sent the ids as bare strings and never
+    said what ``a1@3,4`` meant, so the model was choosing between tokens whose
+    referents it had to guess. Nothing new is *offered* here -- ``candidates``
+    is derived from ``assignment_ids`` by the same parser the response check
+    uses, so the described set and the selectable set cannot drift apart.
+
+    Nothing episode-scoped enters the payload: no ``event_id`` (which embeds
+    the episode number), no ``food_id``, no seed, no step index, no timestamp.
+    """
+    candidates = []
+    for assignment_id in assignment_ids:
+        parsed = parse_assignment_id(assignment_id)
+        if parsed is None:                       # unreachable for code-built ids
+            continue
+        agent_id, cell = parsed
+        candidates.append({
+            "assignment_id": assignment_id,
+            "agent_id": agent_id,
+            "loading_cell": [cell[0], cell[1]],
+        })
     payload = {
         "event_type": request.event_type,
         "target_food": {
@@ -150,11 +181,21 @@ def build_prompt(request, assignment_ids):
             for c in sorted(request.agent_context, key=lambda c: int(c.agent_id))
         ],
         "candidate_assignment_ids": list(assignment_ids),
+        "candidates": candidates,
         "instructions": (
-            "Choose exactly one candidate assignment id for each recipient "
-            "agent so that the coalition can load the target food. Return only "
-            "ids from candidate_assignment_ids."
-        ),
+            "Each candidate assignment id has the form a<agent_id>@<row>,<col>: "
+            "the agent it applies to, and the loading cell that agent should "
+            "occupy. The same pairs are listed in `candidates` with the agent "
+            "and cell spelled out. Positions are [row, col] on the same grid as "
+            "target_food.position. Choose exactly {n} id(s) -- one for each of "
+            "the {n} recipient agent(s) -- so that the recipients together "
+            "occupy cells adjacent to the target food and their levels sum to "
+            "at least target_food.level. Where several assignments are equally "
+            "feasible, prefer the one that reaches a loading configuration in "
+            "the fewest moves from the recipients' current positions, and "
+            "prefer giving different recipients different loading cells. "
+            "Return only ids from candidate_assignment_ids."
+        ).format(n=len(request.recipient_agents)),
     }
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
