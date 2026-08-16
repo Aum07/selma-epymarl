@@ -123,9 +123,12 @@ class EpisodeRunner:
         # which is bit-identical to unshaped QMIX (contract 5A).
         self.selma_guidance = None
         self.selma_guidance_writer = None
+        self.selma_accounting = None
+        self.selma_cache = None
+        self.selma_gateway = None
         if self.selma_config.guidance_enabled:
             from selma.guidance import GuidanceController, GuidanceCsvWriter
-            from selma.provider import make_provider
+            from selma.provider_registry import is_live_provider, make_provider
 
             if self.selma_bank is None:
                 raise ValueError(
@@ -138,18 +141,94 @@ class EpisodeRunner:
                         "selma_mode='active' requires env.{}() for the successor "
                         "potential; this environment does not provide it.".format(accessor)
                     )
+            # SELMA Stage D: cache, live-call budget and accounting. The
+            # deterministic mock is unaffected -- with the default
+            # selma_cache_mode='off' the gateway performs no lookup and the mock
+            # makes no network call, so Stage C behaviour is unchanged.
+            provider_kwargs = {}
+            if is_live_provider(self.selma_config.provider):
+                provider_kwargs = {
+                    "timeout": self.selma_config.provider_timeout_s,
+                    "max_retries": self.selma_config.provider_max_retries,
+                    "backoff_s": self.selma_config.provider_backoff_s,
+                    "max_output_tokens": self.selma_config.provider_max_output_tokens,
+                }
+            provider = make_provider(self.selma_config.provider, **provider_kwargs)
+            condition = str(self.args.env_args.get("key", self.args.env))
+            self.selma_accounting, self.selma_cache, self.selma_gateway = (
+                self._build_selma_stage_d(provider, condition)
+            )
+
             self.selma_guidance = GuidanceController(
-                provider=make_provider(self.selma_config.provider),
+                provider=self.selma_gateway or provider,
                 grid_shape=self.selma_bank.grid_shape,
                 beta=self.selma_config.beta,
                 gamma=float(self.args.gamma),
                 enabled=True,
                 variant_id=self.selma_config.variant_id,
+                accounting=self.selma_accounting,
             )
             if self.selma_config.guidance_log_csv:
                 self.selma_guidance_writer = GuidanceCsvWriter(
                     self.selma_config.guidance_log_csv
                 )
+
+    def _build_selma_stage_d(self, provider, condition):
+        """Accounting, cache and gateway for one run. Returns the three objects.
+
+        The cache database is identified by condition + seed + provider + model,
+        so reopening another run's writable store is refused unless it is
+        allowed deliberately.
+        """
+        from selma.accounting import SelmaAccounting
+        from selma.gateway import CACHE_OFF, ProviderGateway
+        from selma.provider_registry import is_live_provider
+
+        config = self.selma_config
+        accounting = SelmaAccounting(
+            cache_mode=config.cache_mode,
+            live_call_cap=config.live_call_cap,
+            provider=getattr(provider, "provider_id", "unknown"),
+            requested_model=getattr(provider, "model", ""),
+            prompt_version=getattr(provider, "prompt_version", ""),
+            response_schema_version=getattr(provider, "response_schema_version", ""),
+            price_table_date=config.price_table_date,
+            live_provider=is_live_provider(config.provider),
+        )
+
+        cache = None
+        if config.cache_mode != CACHE_OFF:
+            from selma.cache import SqliteGuidanceCache
+
+            cache = SqliteGuidanceCache(
+                config.cache_path,
+                run_identity="{}|seed{}|{}|{}".format(
+                    condition, self.args.seed,
+                    getattr(provider, "provider_id", "unknown"),
+                    getattr(provider, "model", ""),
+                ),
+                allow_shared_write=config.cache_allow_shared_write,
+                read_only=config.cache_mode == "read_only",
+            )
+
+        gateway = ProviderGateway(
+            provider,
+            accounting=accounting,
+            cache=cache,
+            cache_mode=config.cache_mode,
+            live_call_cap=config.live_call_cap,
+            condition=condition,
+            grid_shape=self.selma_bank.grid_shape,
+            # A provider that cannot perform network I/O is always allowed; a
+            # live one is allowed only while the cap has room.
+            allow_live_calls=True,
+        )
+        if not is_live_provider(config.provider):
+            # Offline providers never consume the live-call budget: nothing they
+            # do is an HTTP request.
+            gateway.live_call_cap = None
+            accounting.live_call_cap = None
+        return accounting, cache, gateway
 
     def setup(self, scheme, groups, preprocess, mac):
         self.new_batch = partial(
@@ -541,6 +620,12 @@ class EpisodeRunner:
                     raise AssertionError(
                         "SELMA Stage C invariant violated: beta=0 produced shaping "
                         f"{selma_shaping_total}"
+                    )
+                # SELMA HARD invariant (Stage D): the eleven accounting counters
+                # must reconcile after every episode, not only at run end.
+                if self.selma_accounting is not None:
+                    self.selma_accounting.assert_invariants(
+                        max_retries=self.selma_config.provider_max_retries
                     )
             if self.selma_shadow_writer is not None:
                 self.selma_shadow_writer.write(selma_bank.drain_rows())

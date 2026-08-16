@@ -379,9 +379,19 @@ style as the Stage C runtime invariants.
    — the gap is exactly `terminal_suppressed_events + missing_position_rejections`.
 2. `cache_lookup_count == provider_request_considered_count`
    — **lookup precedes every call**; one lookup per considered request, no exceptions.
+   *(Factual correction, 2026-08-16, made during implementation: this holds when
+   the cache is enabled. With `selma_cache_mode=off` there is by definition no
+   lookup, and the invariant becomes `cache_lookup_count == 0`.)*
 3. `cache_hit_count + cache_miss_count == cache_lookup_count`.
-4. `live_api_call_count == cache_miss_count + retry_count`
-   — a hit issues no call; a miss issues exactly one, plus any retries.
+4. `live_api_call_count == call_opportunities + retry_count`
+   — a hit issues no call; a call opportunity issues exactly one, plus any retries.
+   *(Factual correction, 2026-08-16, made during implementation: the original
+   text used `cache_miss_count`, which is wrong when the cache is off — there
+   are then live calls and no misses. A **call opportunity** is
+   `cache_miss_count` when the cache is enabled and
+   `provider_request_considered_count` when it is off. The identity also relaxes
+   to a two-sided bound when a call is suppressed by budget exhaustion,
+   read-only mode or an offline provider.)*
 5. `cache_hit_count > 0 ⇒ live_api_call_count < provider_request_considered_count`.
 6. `successful_response_count + fallback_count == provider_request_considered_count`
    — every considered request has exactly one terminal outcome.
@@ -389,7 +399,8 @@ style as the Stage C runtime invariants.
    — a validated response always activates or replaces; nothing is validated and dropped.
 8. `rejected_response_count ≥ fallback_count − budget_exhausted_count − timeout_count − transport_error_count`
    — rejections are per-response, fallbacks per-request.
-9. `retry_count ≤ max_retries × cache_miss_count`.
+9. `retry_count ≤ max_retries × call_opportunities` *(same correction as
+   invariant 4: `cache_miss_count` in the original text)*.
 10. `live_api_call_count ≤ live_call_budget` (§8), always.
 11. **Greedy evaluation:** every counter's delta across a `test_mode=True` episode
     is exactly `0`. Already true in Stage C and tested; it must remain an assertion.

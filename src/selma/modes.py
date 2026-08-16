@@ -49,6 +49,16 @@ class SelmaRuntimeConfig(NamedTuple):
     detector_enabled: bool
     guidance_enabled: bool
     guidance_log_csv: str
+    # -- Stage D: cache and live-call budget. Inert unless mode is active.
+    cache_mode: str = "off"
+    cache_path: str = ""
+    cache_allow_shared_write: bool = False
+    live_call_cap: int = 0
+    provider_timeout_s: float = 30.0
+    provider_max_retries: int = 1
+    provider_backoff_s: float = 0.5
+    provider_max_output_tokens: int = 512
+    price_table_date: str = ""
 
 
 def _get(args, name, default):
@@ -120,13 +130,12 @@ def validate_selma_config(args):
                 )
             )
         # Reject an unsupported provider here, before an environment is built.
-        from selma.provider import PROVIDERS
+        from selma.provider_registry import SUPPORTED_PROVIDERS
 
-        if provider not in PROVIDERS:
+        if provider not in SUPPORTED_PROVIDERS:
             raise SelmaConfigError(
-                "selma_provider={!r} is not supported in this build. Available: {}. "
-                "No live provider is implemented in the Stage C deterministic "
-                "slice.".format(provider, ", ".join(sorted(PROVIDERS)))
+                "selma_provider={!r} is not supported in this build. Available: {}."
+                .format(provider, ", ".join(sorted(SUPPORTED_PROVIDERS)))
             )
         if not variant_id:
             raise SelmaConfigError(
@@ -147,6 +156,8 @@ def validate_selma_config(args):
                 "no per-agent shaping and none will be invented.".format(MODE_ACTIVE)
             )
 
+    cache_mode, cache_path, allow_shared, live_call_cap = _validate_stage_d(args, mode)
+
     return SelmaRuntimeConfig(
         mode=mode,
         provider=provider,
@@ -155,4 +166,60 @@ def validate_selma_config(args):
         detector_enabled=mode in (MODE_SHADOW, MODE_ACTIVE),
         guidance_enabled=mode == MODE_ACTIVE,
         guidance_log_csv=guidance_log_csv,
+        cache_mode=cache_mode,
+        cache_path=cache_path,
+        cache_allow_shared_write=allow_shared,
+        live_call_cap=live_call_cap,
+        provider_timeout_s=float(_get(args, "selma_provider_timeout_s", 30.0)),
+        provider_max_retries=int(_get(args, "selma_provider_max_retries", 1)),
+        provider_backoff_s=float(_get(args, "selma_provider_backoff_s", 0.5)),
+        provider_max_output_tokens=int(
+            _get(args, "selma_provider_max_output_tokens", 512)),
+        price_table_date=str(_get(args, "selma_price_table_date", "") or ""),
     )
+
+
+def _validate_stage_d(args, mode):
+    """Validate the Stage D cache / live-call-budget surface.
+
+    Every rule here fails at construction time. A cache that is silently
+    disabled, or a budget that is silently unlimited, would be an unrecoverable
+    experimental error discovered only in the bill.
+    """
+    from selma.gateway import CACHE_MODES, CACHE_OFF
+
+    cache_mode = str(_get(args, "selma_cache_mode", CACHE_OFF) or CACHE_OFF)
+    if cache_mode not in CACHE_MODES:
+        raise SelmaConfigError(
+            "selma_cache_mode={!r} is not a known mode. Legal modes: {}."
+            .format(cache_mode, ", ".join(CACHE_MODES))
+        )
+    cache_path = str(_get(args, "selma_cache_path", "") or "")
+    allow_shared = bool(_get(args, "selma_cache_allow_shared_write", False))
+
+    if cache_mode != CACHE_OFF:
+        if mode != MODE_ACTIVE:
+            raise SelmaConfigError(
+                "selma_cache_mode={!r} requires selma_mode={!r}; got {!r}. "
+                "Only active mode issues guidance requests to cache."
+                .format(cache_mode, MODE_ACTIVE, mode)
+            )
+        if not cache_path:
+            raise SelmaConfigError(
+                "selma_cache_mode={!r} requires an explicit selma_cache_path. "
+                "One database per condition/seed/run; nothing is defaulted, so "
+                "two runs can never silently share a store.".format(cache_mode)
+            )
+
+    raw_cap = _get(args, "selma_live_call_cap", 0)
+    try:
+        live_call_cap = int(raw_cap)
+    except (TypeError, ValueError):
+        raise SelmaConfigError(
+            "selma_live_call_cap={!r} is not an integer.".format(raw_cap))
+    if live_call_cap < 0:
+        raise SelmaConfigError(
+            "selma_live_call_cap={!r} must be >= 0. Use 0 to forbid live calls "
+            "entirely; there is no unlimited setting.".format(raw_cap))
+
+    return cache_mode, cache_path, allow_shared, live_call_cap

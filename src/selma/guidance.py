@@ -199,8 +199,13 @@ class GuidanceController:
     environment state, and is never constructed in greedy evaluation.
     """
 
-    def __init__(self, provider, grid_shape, beta, gamma, enabled, variant_id):
+    def __init__(self, provider, grid_shape, beta, gamma, enabled, variant_id,
+                 accounting=None):
         self.provider = provider
+        #: Optional Stage D accounting (selma.accounting.SelmaAccounting).
+        #: ``None`` keeps the Stage C behaviour exactly: nothing is recorded and
+        #: no code path below changes.
+        self.accounting = accounting
         self.grid_shape = tuple(grid_shape)
         self.beta = float(beta)
         self.gamma = float(gamma)
@@ -296,19 +301,31 @@ class GuidanceController:
                 request = build_request(row, agent_positions=agent_positions)
             except MissingAgentPositionError:
                 # Documented rejection: no provider call, no guidance, F_t = 0.
+                # No request was built, so this is *not* a considered request
+                # and must not be counted as one (Stage D invariant 1's gap).
                 self.rejected_count += 1
                 fallback = REASON_MISSING_AGENT_POSITION
                 self.fallback_reasons[fallback] = self.fallback_reasons.get(fallback, 0) + 1
+                if self.accounting is not None:
+                    self.accounting.missing_position_count += 1
                 continue
 
             self.query_count += 1
             self.provider_call_count += 1
             queried += 1
             response = self.provider.query(request)
+            # The deterministic validator is authoritative for every response,
+            # including one served from the Stage D cache.
             verdict = validate(request, response)
+            notify = getattr(self.provider, "note_validation", None)
+            if notify is not None:
+                notify(request, response, verdict.valid)
             if not verdict.valid:
                 self.rejected_count += 1
-                fallback = verdict.reason
+                # A gateway knows *why* there was no usable response (budget
+                # exhausted, read-only miss, timeout, refusal...); the bare
+                # validator only ever sees "no_response".
+                fallback = getattr(self.provider, "last_fallback_reason", "") or verdict.reason
                 self.fallback_reasons[fallback] = self.fallback_reasons.get(fallback, 0) + 1
                 continue
 
@@ -334,6 +351,8 @@ class GuidanceController:
                 trigger_agent_ids=row.get("trigger_agent_ids", ()) or (),
             )
             activated += 1
+            if self.accounting is not None:
+                self.accounting.guidance_activation_count += 1
         return queried, activated, provider_valid, fallback
 
     # -- the single per-transition path -------------------------------------
@@ -354,6 +373,14 @@ class GuidanceController:
         """
         phi_before = float(phi_before)
 
+        # Stage D bookkeeping only. Counted before any suppression, so the gap
+        # to provider_request_considered_count is exactly the suppressed set.
+        if self.accounting is not None:
+            self.accounting.detector_event_count += sum(
+                1 for r in (event_rows or ())
+                if r.get("row_type") == "coalesced_event"
+            )
+
         # 1. TTL accounting: g_t served this transition as guidance_before.
         if self.active is not None:
             self.active.transitions_served += 1
@@ -371,6 +398,8 @@ class GuidanceController:
         elif episode_ended:
             suppressed = len(self._eligible(event_rows))
             self.terminal_suppressed_events += suppressed
+            if self.accounting is not None:
+                self.accounting.terminal_suppressed_event_count += suppressed
         else:
             queried, activated, provider_valid, fallback = self._offer(
                 event_rows, post_agent_positions, step

@@ -30,8 +30,19 @@ selma_max_events_per_episode: 2 # SELMA Stage B lifecycle (calibration value, no
 selma_w_inbound: 3 # SELMA Stage B inbound-help window (shadow comparison only)
 selma_variant_id: "" # SELMA: restrict the detector bank to one variant id (empty = all 48, shadow calibration). Required, and must be the frozen variant, in active mode
 selma_beta: 0.0 # SELMA Stage C: PBRS shaping scale, applied exactly once. 0.0 = no shaping (default; bit-identical to off)
-selma_provider: "none" # SELMA Stage C: none | deterministic_mock. Legal only with selma_mode=active
+selma_provider: "none" # SELMA: none | deterministic_mock | openai. Legal only with selma_mode=active; openai is disabled unless named here explicitly
 selma_guidance_log_csv: "" # SELMA Stage C: path for the per-transition PBRS log (empty = disabled)
+# --- SELMA Stage D: provider cache and live-call budget. All inert by default;
+# the OpenAI provider is disabled unless selma_provider is set to it explicitly.
+selma_cache_mode: "off" # SELMA Stage D: off | read_write | read_only. Legal only with selma_mode=active
+selma_cache_path: "" # SELMA Stage D: SQLite cache path. Required when the cache is on; one database per condition/seed/run
+selma_cache_allow_shared_write: False # SELMA Stage D: permit reopening another run's writable cache (never silently)
+selma_live_call_cap: 2000 # SELMA Stage D: hard per-run cap on live provider calls; every HTTP attempt (including retries) consumes it. Provisional, not experimentally frozen
+selma_provider_timeout_s: 30.0 # SELMA Stage D: per-attempt wall-clock timeout
+selma_provider_max_retries: 1 # SELMA Stage D: retries after the first attempt; each retry is a live call
+selma_provider_backoff_s: 0.5 # SELMA Stage D: base backoff between attempts (exponential)
+selma_provider_max_output_tokens: 512 # SELMA Stage D: bounded output length
+selma_price_table_date: "" # SELMA Stage D: dated price table used to recompute cost from stored token counts (cost is never hard-coded)
 use_wandb: False # Log results to W&B
 wandb_team: null # W&B team name
 wandb_project: null # W&B project name
