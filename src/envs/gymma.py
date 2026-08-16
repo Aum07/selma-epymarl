@@ -269,6 +269,31 @@ class GymmaWrapper(MultiAgentEnv):
             return None
         return tuple(self._env.unwrapped.field.shape)
 
+    def get_selma_agent_positions(self):
+        """SELMA Stage C: current (post-step) agent positions, else None.
+
+        Read-only. Stage A's step record carries *pre*-step agent positions, but
+        the PBRS successor potential Phi(s_{t+1}, ...) needs post-step state, so
+        the runner reads it here. Touches no environment state.
+        """
+        if not self._is_lbforaging:
+            return None
+        return {
+            i: tuple(int(x) for x in p.position)
+            for i, p in enumerate(self._env.unwrapped.players)
+        }
+
+    def get_selma_food_positions(self):
+        """SELMA Stage C: current (post-step) food coordinates, else None."""
+        if not self._is_lbforaging:
+            return None
+        import numpy as _np
+
+        field = self._env.unwrapped.field
+        return tuple(
+            (int(r), int(c)) for r, c in zip(*_np.nonzero(field))
+        )
+
     def get_obs(self):
         """Returns all agent observations in a list"""
         return self._obs

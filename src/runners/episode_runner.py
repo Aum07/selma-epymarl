@@ -5,6 +5,7 @@ import numpy as np
 from components.episode_buffer import EpisodeBatch
 from envs import REGISTRY as env_REGISTRY
 from envs import register_smac, register_smacv2
+from selma.guidance import PHI_BOUNDARY_TOLERANCE
 
 # SELMA: LBF load-event diagnostic fields accumulated per episode (see envs/gymma.py).
 # Zero for non-LBF environments; the underlying computation is gated to lbforaging there.
@@ -50,21 +51,32 @@ class EpisodeRunner:
         # Log the first run
         self.log_train_stats_t = -1000000
 
-        # SELMA Stage B: shadow detector bank. Created only for selma_mode
-        # "shadow"; with the default "off" nothing below ever runs, so plain
-        # QMIX behaviour is bit-for-bit unchanged.
+        # SELMA mode contract (src/selma/modes.py). Validated before anything is
+        # constructed: off / shadow / active are the only legal modes and every
+        # illegal provider, beta, variant or common_reward combination raises
+        # here rather than degrading silently to an unshaped baseline.
+        from selma.modes import validate_selma_config
+
+        self.selma_config = validate_selma_config(self.args)
+
+        # SELMA Stage B: detector bank. Created for "shadow" (all 48 variants,
+        # calibration) and for "active" (the frozen variant only). With the
+        # default "off" nothing below ever runs, so plain QMIX behaviour is
+        # bit-for-bit unchanged.
         self.selma_bank = None
         self.selma_shadow_writer = None
-        if getattr(self.args, "selma_mode", "off") == "shadow":
+        if self.selma_config.detector_enabled:
             from selma.detector import ShadowDetectorBank, build_variant_grid
             from selma.shadow_log import ShadowCsvWriter
 
-            # SELMA: optional single-variant restriction. Empty (the default) keeps the
-            # full 48-variant grid with its original ordering and contents. A non-empty
-            # id selects that variant *from* build_variant_grid(), so its parameters are
-            # never reconstructed here; an unknown or ambiguous id fails loudly before
-            # training rather than silently falling back to all 48.
-            selma_variant_id = str(getattr(self.args, "selma_variant_id", "") or "")
+            # SELMA: optional single-variant restriction. Empty (shadow default) keeps
+            # the full 48-variant grid with its original ordering and contents. A
+            # non-empty id selects that variant *from* build_variant_grid(), so its
+            # parameters are never reconstructed here; an unknown or ambiguous id fails
+            # loudly before training rather than silently falling back to all 48.
+            # Active mode always names the frozen variant (enforced by the mode
+            # contract), so its bank holds exactly one variant.
+            selma_variant_id = self.selma_config.variant_id
             if selma_variant_id:
                 all_variants = build_variant_grid()
                 matches = [v for v in all_variants if v.variant_id == selma_variant_id]
@@ -106,6 +118,38 @@ class EpisodeRunner:
                     self.selma_shadow_writer = ShadowCsvWriter(
                         self.args.selma_shadow_csv
                     )
+
+        # SELMA Stage C: guidance + PBRS, active mode only. beta defaults to 0.0,
+        # which is bit-identical to unshaped QMIX (contract 5A).
+        self.selma_guidance = None
+        self.selma_guidance_writer = None
+        if self.selma_config.guidance_enabled:
+            from selma.guidance import GuidanceController, GuidanceCsvWriter
+            from selma.provider import make_provider
+
+            if self.selma_bank is None:
+                raise ValueError(
+                    "selma_mode='active' requires a SELMA detector bank; none was "
+                    "constructed (is this an LBF environment?)."
+                )
+            for accessor in ("get_selma_agent_positions", "get_selma_food_positions"):
+                if not hasattr(self.env, accessor):
+                    raise ValueError(
+                        "selma_mode='active' requires env.{}() for the successor "
+                        "potential; this environment does not provide it.".format(accessor)
+                    )
+            self.selma_guidance = GuidanceController(
+                provider=make_provider(self.selma_config.provider),
+                grid_shape=self.selma_bank.grid_shape,
+                beta=self.selma_config.beta,
+                gamma=float(self.args.gamma),
+                enabled=True,
+                variant_id=self.selma_config.variant_id,
+            )
+            if self.selma_config.guidance_log_csv:
+                self.selma_guidance_writer = GuidanceCsvWriter(
+                    self.selma_config.guidance_log_csv
+                )
 
     def setup(self, scheme, groups, preprocess, mac):
         self.new_batch = partial(
@@ -164,6 +208,19 @@ class EpisodeRunner:
         selma_bank = self.selma_bank if not test_mode else None
         if selma_bank is not None:
             selma_bank.reset_episode(None)
+        # SELMA Stage C: guidance is training-only. In greedy evaluation the
+        # controller is not consulted at all: zero queries, zero activation,
+        # zero shaping, and reward stays the raw environment reward.
+        selma_guidance = self.selma_guidance if not test_mode else None
+        if selma_guidance is not None:
+            selma_guidance.reset_episode()
+        selma_guidance_writer = self.selma_guidance_writer if not test_mode else None
+        # SELMA Stage C: phi_before(t) is phi_after_effective(t-1), carried
+        # forward rather than recomputed, so the boundary identity holds by
+        # construction. It starts at 0.0 because reset_episode cleared guidance.
+        selma_phi_before = 0.0
+        selma_shaping_total = 0.0
+        selma_last_stored_terminated = False
 
         terminated = False
         if self.args.common_reward:
@@ -194,8 +251,12 @@ class EpisodeRunner:
                 self.batch, t_ep=self.t, t_env=self.t_env, test_mode=test_mode
             )
 
-            _, reward, terminated, truncated, env_info = self.env.step(actions[0])
-            terminated = terminated or truncated
+            _, reward, env_terminated, env_truncated, env_info = self.env.step(actions[0])
+            terminated = env_terminated or env_truncated
+            # SELMA Stage C: per-transition detector output, reset every step so
+            # a stale event list can never be reused on a later transition.
+            selma_events = ()
+            selma_episode_id = -1
             # SELMA: pop per-agent reward (also keeps env_info numeric for stats agg)
             _par = env_info.pop("per_agent_reward", None)
             # SELMA: pop LBF load-event fields (no-op / all-zero for non-LBF envs)
@@ -238,11 +299,46 @@ class EpisodeRunner:
                 # SELMA Stage B: shadow observation only. Reads the immutable
                 # Stage A record and the raw team reward; writes nothing back.
                 if selma_bank is not None:
+                    if selma_guidance is not None:
+                        # SELMA HARD invariant (Stage C): the carried phi_before
+                        # must equal Phi(s_t, g_t) recomputed from the Stage A
+                        # pre-step record. This is the boundary identity
+                        # phi_after_effective(t-1) == phi_before(t) -- the
+                        # property that makes the shaping telescope -- and it
+                        # also catches any divergence between the Stage A record
+                        # and the GymMA post-step accessors.
+                        pre_positions = {
+                            int(a.agent_id): tuple(int(x) for x in a.position)
+                            for a in selma_step_info.agents
+                        }
+                        pre_foods = tuple(f.position for f in selma_step_info.pre_foods)
+                        recomputed = selma_guidance.potential(pre_positions, pre_foods)
+                        if abs(recomputed - selma_phi_before) > PHI_BOUNDARY_TOLERANCE:
+                            raise AssertionError(
+                                "SELMA Stage C invariant violated: carried "
+                                f"phi_before={selma_phi_before!r} but Phi(s_t, g_t) "
+                                f"recomputes to {recomputed!r} at step {self.t}"
+                            )
+                        # Rows reach bank.rows only at finish_episode() (resolution
+                        # labels resolve there); events are visible at emission time
+                        # on bank.pending_rows, which is what guidance needs.
+                        selma_n_rows_before = len(selma_bank.pending_rows)
+
                     selma_bank.update(
                         step_info=selma_step_info,
                         raw_team_reward=float(np.asarray(reward).sum()),
                         t_env=self.t_env + self.t,
                     )
+
+                    if selma_guidance is not None:
+                        # Events emitted by the detector on this transition are
+                        # candidates for g_{t+1}. The controller does the frozen
+                        # variant, feasibility and suppression filtering.
+                        selma_events = [
+                            entry[0]
+                            for entry in selma_bank.pending_rows[selma_n_rows_before:]
+                        ]
+                        selma_episode_id = selma_step_info.episode_id
             if _par is not None:
                 _pa = np.asarray(_par, dtype=float)
                 per_agent_ep += _pa
@@ -264,10 +360,70 @@ class EpisodeRunner:
                 self.env.render()
             episode_return += reward
 
+            stored_terminated = terminated != env_info.get("episode_limit", False)
             post_transition_data = {
                 "actions": actions,
-                "terminated": [(terminated != env_info.get("episode_limit", False),)],
+                "terminated": [(stored_terminated,)],
             }
+
+            # SELMA Stage C: potential-based shaping. The raw reward is never
+            # mutated; the guidance boundary is advanced and the transition
+            # priced by the single shared path in GuidanceController, which the
+            # ordering tests drive directly.
+            if selma_guidance is not None:
+                post_positions = self.env.get_selma_agent_positions()
+                post_foods = self.env.get_selma_food_positions()
+                if post_positions is None or post_foods is None:
+                    raise AssertionError(
+                        "SELMA Stage C invariant violated: the environment returned "
+                        f"no post-step state at step {self.t}"
+                    )
+                # Terminal cause, for the log only -- it never affects shaping,
+                # which follows the stored bootstrap mask alone. This LBF
+                # wrapper reports a horizon ending as `terminated`, not
+                # `truncated` (docs/selma_stage0_terminal_mask.md), so the env
+                # flags alone cannot tell the two endings apart. Clearing the
+                # last food is the true terminal; reaching the horizon with food
+                # still on the grid is a time limit.
+                if not terminated:
+                    terminal_cause = ""
+                elif not post_foods:
+                    terminal_cause = "true_terminal"
+                elif env_truncated or (self.t + 1) >= self.episode_limit:
+                    terminal_cause = "time_limit"
+                else:
+                    terminal_cause = "true_terminal"
+                selma_record = selma_guidance.apply_transition(
+                    step=self.t,
+                    raw_team_reward=reward,
+                    phi_before=selma_phi_before,
+                    post_agent_positions=post_positions,
+                    post_food_positions=post_foods,
+                    event_rows=selma_events,
+                    episode_ended=bool(terminated),
+                    stored_terminated=bool(stored_terminated),
+                    terminal_cause=terminal_cause,
+                )
+                reward = selma_record.training_reward
+                # The successor potential of this transition IS the predecessor
+                # potential of the next one. Carrying it forward is what makes
+                # the shaping telescope exactly.
+                selma_phi_before = selma_record.phi_after_effective
+                selma_shaping_total += selma_record.shaping_contribution
+                selma_last_stored_terminated = bool(stored_terminated)
+                if selma_guidance_writer is not None:
+                    selma_guidance_writer.write_row(
+                        record=selma_record,
+                        controller=selma_guidance,
+                        t_env=self.t_env + self.t,
+                        condition=str(
+                            self.args.env_args.get("key", self.args.env)
+                        ),
+                        seed=self.args.seed,
+                        episode_id=selma_episode_id,
+                        condition_checked=1,
+                    )
+
             if self.args.common_reward:
                 post_transition_data["reward"] = [(reward,)]
             else:
@@ -365,6 +521,27 @@ class EpisodeRunner:
                     f"subgoals={selma_bank.active_subgoal_count} "
                     f"shaping={selma_bank.total_shaping_reward}"
                 )
+            # SELMA HARD invariant (Stage C): guidance must never survive an
+            # episode boundary, and shaping must be exactly zero whenever the
+            # mode is not active or beta is zero.
+            if selma_guidance is not None:
+                # A stored terminal removes guidance at its own boundary; a
+                # bootstrapped time limit (which this LBF configuration never
+                # produces -- see docs/selma_stage0_terminal_mask.md) keeps it
+                # for the successor potential and reset_episode clears it.
+                if (
+                    selma_last_stored_terminated
+                    and selma_guidance.active is not None
+                ):
+                    raise AssertionError(
+                        "SELMA Stage C invariant violated: guidance still active at "
+                        f"the episode boundary (event {selma_guidance.active.event_id})"
+                    )
+                if selma_guidance.beta == 0.0 and selma_shaping_total != 0.0:
+                    raise AssertionError(
+                        "SELMA Stage C invariant violated: beta=0 produced shaping "
+                        f"{selma_shaping_total}"
+                    )
             if self.selma_shadow_writer is not None:
                 self.selma_shadow_writer.write(selma_bank.drain_rows())
             else:

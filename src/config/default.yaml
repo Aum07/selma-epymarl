@@ -21,14 +21,17 @@ buffer_cpu_only: True # If true we won't keep all of the replay buffer in vram
 # --- Logging options ---
 use_tensorboard: False # Log results to tensorboard
 selma_log_csv: "" # SELMA: path for per-episode per-agent return CSV (empty = disabled)
-selma_mode: "off" # SELMA: off | shadow. Stage B adds shadow only; off is unchanged plain QMIX
+selma_mode: "off" # SELMA: off | shadow | active. off = unchanged plain QMIX; shadow = Stage B detector only; active = Stage C guidance + PBRS. Unknown modes are rejected
 selma_shadow_csv: "" # SELMA: path for the Stage B shadow detector CSV (empty = disabled)
 selma_shadow_summary_json: "" # SELMA: path for the Stage B per-variant calibration summary (empty = disabled)
 selma_rearm_steps: 3 # SELMA Stage B lifecycle (calibration value, not a frozen setting)
 selma_cooldown_steps: 5 # SELMA Stage B lifecycle (calibration value, not a frozen setting)
 selma_max_events_per_episode: 2 # SELMA Stage B lifecycle (calibration value, not frozen)
 selma_w_inbound: 3 # SELMA Stage B inbound-help window (shadow comparison only)
-selma_variant_id: "" # SELMA Stage B: restrict the shadow bank to one variant id (empty = all 48, unchanged)
+selma_variant_id: "" # SELMA: restrict the detector bank to one variant id (empty = all 48, shadow calibration). Required, and must be the frozen variant, in active mode
+selma_beta: 0.0 # SELMA Stage C: PBRS shaping scale, applied exactly once. 0.0 = no shaping (default; bit-identical to off)
+selma_provider: "none" # SELMA Stage C: none | deterministic_mock. Legal only with selma_mode=active
+selma_guidance_log_csv: "" # SELMA Stage C: path for the per-transition PBRS log (empty = disabled)
 use_wandb: False # Log results to W&B
 wandb_team: null # W&B team name
 wandb_project: null # W&B project name

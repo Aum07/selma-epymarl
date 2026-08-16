@@ -1,0 +1,158 @@
+"""SELMA mode contract: the single place every mode/provider/beta rule lives.
+
+Three modes, and nothing else:
+
+``off``
+    No detector, no provider, no guidance, no shaping. Bit-for-bit unmodified
+    EPyMARL.
+``shadow``
+    Stage B detector and its diagnostics only. A provider or a non-zero ``beta``
+    here is a configuration error, not a silently ignored setting. The variant
+    bank keeps its multi-variant calibration behaviour unchanged.
+``active``
+    Stage C: detector plus an explicitly named provider plus PBRS. ``beta`` may
+    be ``0.0`` -- that is the equivalence-testing configuration and it must stay
+    bit-identical to ``off``.
+
+**An unknown mode is rejected.** The audited implementation compared
+``selma_mode == "shadow"`` and treated every other string -- including typos and
+the plausible-looking ``"active"`` -- as ``off``, so a misconfigured experiment
+would have run silently as an unshaped baseline. Every rule below fails loudly
+at construction time instead.
+"""
+
+import math
+from typing import NamedTuple
+
+MODE_OFF = "off"
+MODE_SHADOW = "shadow"
+MODE_ACTIVE = "active"
+ALLOWED_MODES = (MODE_OFF, MODE_SHADOW, MODE_ACTIVE)
+
+PROVIDER_NONE = "none"
+
+#: The Stage B frozen detector variant. Active mode may use no other.
+FROZEN_ACTIVE_VARIANT = "wf15_m3_t5_ibon"
+
+
+class SelmaConfigError(ValueError):
+    """A SELMA configuration that must never be allowed to start training."""
+
+
+class SelmaRuntimeConfig(NamedTuple):
+    """The validated, frozen result of reading the SELMA config keys."""
+
+    mode: str
+    provider: str
+    beta: float
+    variant_id: str          # "" means "all variants" (shadow calibration only)
+    detector_enabled: bool
+    guidance_enabled: bool
+    guidance_log_csv: str
+
+
+def _get(args, name, default):
+    return getattr(args, name, default)
+
+
+def validate_selma_config(args):
+    """Validate the SELMA configuration surface. Returns a SelmaRuntimeConfig.
+
+    Raises :class:`SelmaConfigError` on any illegal combination. Pure: reads
+    ``args`` and nothing else, so it is testable without an environment.
+    """
+    mode = _get(args, "selma_mode", MODE_OFF)
+    if not isinstance(mode, str) or mode not in ALLOWED_MODES:
+        raise SelmaConfigError(
+            "selma_mode={!r} is not a known SELMA mode. Legal modes: {}. "
+            "Unknown modes are rejected rather than treated as {!r}.".format(
+                mode, ", ".join(ALLOWED_MODES), MODE_OFF
+            )
+        )
+
+    provider = str(_get(args, "selma_provider", PROVIDER_NONE) or PROVIDER_NONE)
+    variant_id = str(_get(args, "selma_variant_id", "") or "")
+    guidance_log_csv = str(_get(args, "selma_guidance_log_csv", "") or "")
+
+    raw_beta = _get(args, "selma_beta", 0.0)
+    try:
+        beta = float(raw_beta)
+    except (TypeError, ValueError):
+        raise SelmaConfigError(
+            "selma_beta={!r} is not a number.".format(raw_beta)
+        )
+    if not math.isfinite(beta):
+        raise SelmaConfigError(
+            "selma_beta={!r} is not finite. A non-finite shaping scale would "
+            "poison every stored reward.".format(raw_beta)
+        )
+
+    if mode in (MODE_OFF, MODE_SHADOW):
+        if provider != PROVIDER_NONE:
+            raise SelmaConfigError(
+                "selma_provider={!r} requires selma_mode={!r}; got selma_mode={!r}. "
+                "In {!r} mode the detector is observation-only and must issue zero "
+                "provider calls.".format(provider, MODE_ACTIVE, mode, mode)
+            )
+        if beta != 0.0:
+            raise SelmaConfigError(
+                "selma_beta={!r} requires selma_mode={!r}; got selma_mode={!r}. "
+                "Shaping cannot exist without guidance.".format(beta, MODE_ACTIVE, mode)
+            )
+        if guidance_log_csv:
+            raise SelmaConfigError(
+                "selma_guidance_log_csv is set but selma_mode={!r} produces no "
+                "guidance transitions to log.".format(mode)
+            )
+
+    if mode == MODE_OFF and variant_id:
+        raise SelmaConfigError(
+            "selma_variant_id={!r} is set but selma_mode={!r} constructs no "
+            "detector.".format(variant_id, MODE_OFF)
+        )
+
+    if mode == MODE_ACTIVE:
+        if provider == PROVIDER_NONE:
+            raise SelmaConfigError(
+                "selma_mode={!r} requires an explicitly named selma_provider; got "
+                "{!r}. Active mode never picks a provider for you.".format(
+                    MODE_ACTIVE, PROVIDER_NONE
+                )
+            )
+        # Reject an unsupported provider here, before an environment is built.
+        from selma.provider import PROVIDERS
+
+        if provider not in PROVIDERS:
+            raise SelmaConfigError(
+                "selma_provider={!r} is not supported in this build. Available: {}. "
+                "No live provider is implemented in the Stage C deterministic "
+                "slice.".format(provider, ", ".join(sorted(PROVIDERS)))
+            )
+        if not variant_id:
+            raise SelmaConfigError(
+                "selma_mode={!r} requires an explicit selma_variant_id. Without it "
+                "the whole 48-variant bank would be offered to the provider, "
+                "producing up to 48 queries and 47 replacements per struggle. "
+                "The frozen variant is {!r}.".format(MODE_ACTIVE, FROZEN_ACTIVE_VARIANT)
+            )
+        if variant_id != FROZEN_ACTIVE_VARIANT:
+            raise SelmaConfigError(
+                "selma_variant_id={!r} is not the frozen Stage B variant. Active "
+                "mode may only use {!r}.".format(variant_id, FROZEN_ACTIVE_VARIANT)
+            )
+        if not bool(_get(args, "common_reward", True)):
+            raise SelmaConfigError(
+                "selma_mode={!r} requires common_reward=True. The Stage C potential "
+                "is aggregated to a single scalar team term (contract 4.3); there is "
+                "no per-agent shaping and none will be invented.".format(MODE_ACTIVE)
+            )
+
+    return SelmaRuntimeConfig(
+        mode=mode,
+        provider=provider,
+        beta=beta,
+        variant_id=variant_id,
+        detector_enabled=mode in (MODE_SHADOW, MODE_ACTIVE),
+        guidance_enabled=mode == MODE_ACTIVE,
+        guidance_log_csv=guidance_log_csv,
+    )
