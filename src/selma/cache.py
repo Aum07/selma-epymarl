@@ -27,11 +27,19 @@ import os
 import sqlite3
 import time
 
-#: Storage schema. Bumping this invalidates every stored row.
-CACHE_SCHEMA_VERSION = "selma_cache_schema_v1"
+from selma.joint_plans import plan_to_dict
+
+#: Storage schema. Bumping this invalidates every stored row -- a database
+#: written under an older value is refused outright, not migrated. Bumped to v2
+#: by the joint-plan correction: the stored response payload now carries
+#: ``selected_plan_id`` instead of a list of per-agent assignment ids, so a
+#: pilot-era row cannot even be opened, let alone served.
+CACHE_SCHEMA_VERSION = "selma_cache_schema_v2"
 
 #: Key composition. Bumping this changes every digest and so invalidates reuse.
-CACHE_KEY_VERSION = "selma_cache_key_v1"
+#: Bumped to v2: ``candidate_assignment_ids`` left the key and the complete
+#: ``candidate_joint_plans`` definitions entered it.
+CACHE_KEY_VERSION = "selma_cache_key_v2"
 
 #: Reasons a lookup that matched a digest is nevertheless treated as a miss.
 MISS_FULL_KEY_MISMATCH = "full_key_mismatch"
@@ -62,7 +70,11 @@ INCLUDED_KEY_FIELDS = (
     "level_deficit",
     "required_extra_level",
     "candidate_loading_cells",
-    "candidate_assignment_ids",
+    # The *complete* plan definitions, not merely their ids. Plan ids are
+    # positional: ``plan_3`` denotes a different mapping in a different layout,
+    # so a key holding only ids would collide across genuinely distinct
+    # questions and serve the wrong answer.
+    "candidate_joint_plans",
     "allowed_roles",
 )
 
@@ -93,18 +105,13 @@ def _cell(value):
     return [int(value[0]), int(value[1])]
 
 
-def candidate_assignment_ids(request):
-    """Deterministic subgoal identifiers offered to a provider.
+def candidate_plan_ids(request):
+    """The offered joint-plan ids, in canonical order.
 
-    One id per (recipient, offered loading cell) pair, in a stable sorted order.
-    A provider selects *among these ids*; it never supplies a coordinate. The
-    ids are part of the cache key because they define the legal answer set.
+    Convenience for the adapter's response schema. The **key** stores the full
+    plan definitions, never these ids alone -- see ``INCLUDED_KEY_FIELDS``.
     """
-    ids = []
-    for ctx in sorted(request.agent_context, key=lambda c: int(c.agent_id)):
-        for cell in sorted({tuple(int(x) for x in c) for c in ctx.candidate_loading_cells}):
-            ids.append("a{}@{},{}".format(int(ctx.agent_id), cell[0], cell[1]))
-    return tuple(sorted(ids))
+    return tuple(plan.plan_id for plan in request.candidate_joint_plans)
 
 
 def build_cache_key(request, *, condition, grid_shape, provider, model_snapshot,
@@ -162,7 +169,8 @@ def build_cache_key(request, *, condition, grid_shape, provider, model_snapshot,
         "level_deficit": int(request.level_deficit),
         "required_extra_level": int(request.required_extra_level),
         "candidate_loading_cells": [_cell(c) for c in cells],
-        "candidate_assignment_ids": list(candidate_assignment_ids(request)),
+        "candidate_joint_plans": [plan_to_dict(p)
+                                  for p in request.candidate_joint_plans],
         "allowed_roles": roles,
     }
 
@@ -189,6 +197,9 @@ def request_to_dict(request):
         "event_type": request.event_type,
         "food_position": _cell(request.food_position),
         "food_level": int(request.food_level),
+        "grid_shape": [int(request.grid_shape[0]), int(request.grid_shape[1])],
+        "candidate_joint_plans": [plan_to_dict(p)
+                                  for p in request.candidate_joint_plans],
         "trigger_agent_ids": [int(a) for a in request.trigger_agent_ids],
         "recipient_agents": [int(a) for a in request.recipient_agents],
         "level_deficit": int(request.level_deficit),
@@ -213,6 +224,7 @@ def response_to_dict(response):
         "recipients": [int(a) for a in response.recipients],
         "target_food_id": [int(x) for x in response.target_food_id],
         "helper_coalition": [int(a) for a in response.helper_coalition],
+        "selected_plan_id": str(response.selected_plan_id),
         "assignments": [
             {"agent_id": int(a.agent_id), "role": str(a.role),
              "loading_cell": _cell(a.loading_cell)}
@@ -227,8 +239,9 @@ def response_from_dict(payload, *, event_id, target_food_id):
 
     ``event_id`` and ``target_food_id`` are episode-scoped and therefore are not
     stored in the key; they are re-bound from the live request. The
-    deterministic validator then re-checks them, so a wrong binding fails closed
-    rather than activating stale guidance.
+    deterministic validator then re-checks them -- **including every joint
+    physical constraint** -- so a stale or tampered plan fails closed rather
+    than activating.
     """
     from selma.provider import Assignment, GuidanceResponse
 
@@ -238,6 +251,7 @@ def response_from_dict(payload, *, event_id, target_food_id):
         recipients=tuple(int(a) for a in payload["recipients"]),
         target_food_id=tuple(int(x) for x in target_food_id),
         helper_coalition=tuple(int(a) for a in payload["helper_coalition"]),
+        selected_plan_id=str(payload["selected_plan_id"]),
         assignments=tuple(
             Assignment(agent_id=int(a["agent_id"]), role=str(a["role"]),
                        loading_cell=tuple(int(x) for x in a["loading_cell"]))

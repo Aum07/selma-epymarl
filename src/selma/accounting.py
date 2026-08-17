@@ -13,6 +13,20 @@ scenario); a violation is an error, not a warning.
 
 from selma.cache import CACHE_KEY_VERSION, CACHE_SCHEMA_VERSION
 
+#: Joint-plan *skips*. These are deliberately **not** fallbacks: no request was
+#: ever considered, so they must not enter ``fallback_count`` (which invariant 6
+#: balances against ``provider_request_considered_count``). They get their own
+#: counters instead, and appear in the per-transition log so a reader can see
+#: why ``F_t = 0``. Frozen policy -- see
+#: ``docs/project/selma_stage_d_joint_plan_acceptance_2026-08-16.md``:
+#:
+#: * zero valid joint plans -> no provider call, no cache call, no guidance;
+#: * exactly one valid joint plan -> the same, because a forced "choice" is not
+#:   a choice. Every activated LLM subgoal was therefore selected from at least
+#:   two physically valid alternatives.
+SKIP_NO_VALID_JOINT_PLAN = "no_valid_joint_plan"
+SKIP_SINGLETON_NO_CHOICE = "singleton_no_choice"
+
 #: Fallback reasons that are *not* a rejected provider response.
 FALLBACK_BUDGET_EXHAUSTED = "budget_exhausted"
 FALLBACK_MISSING_POSITION = "missing_agent_position"
@@ -75,6 +89,12 @@ class SelmaAccounting:
         # supporting detail (not part of the eleven)
         self.terminal_suppressed_event_count = 0
         self.missing_position_count = 0
+        #: Joint-plan decision accounting. These three partition every eligible
+        #: event that produced a request, and only the third may reach a cache
+        #: or a provider.
+        self.zero_plan_skip_count = 0
+        self.singleton_skip_count = 0
+        self.multiple_plan_decision_count = 0
         self.stale_hit_count = 0
         self.budget_exhausted_count = 0
         self.timeout_count = 0
@@ -155,6 +175,10 @@ class SelmaAccounting:
         data = self.snapshot()
         data.update({
             "terminal_suppressed_event_count": self.terminal_suppressed_event_count,
+            "zero_plan_skip_count": self.zero_plan_skip_count,
+            "singleton_skip_count": self.singleton_skip_count,
+            "multiple_plan_decision_count": self.multiple_plan_decision_count,
+            "missing_position_count": self.missing_position_count,
             "stale_hit_count": self.stale_hit_count,
             "budget_exhausted_count": self.budget_exhausted_count,
             "cache_mode": self.cache_mode,
@@ -264,6 +288,32 @@ class SelmaAccounting:
 
         if self.cache_hit_count > self.live_api_call_count + self.cache_hit_count:
             fail(14, "cache hits inflated the live call count")
+
+        # -- joint-plan policy invariants ----------------------------------
+        # I11: every event the controller looked at ends in exactly one bucket,
+        # and the buckets can never exceed the events the detector produced.
+        accounted = (self.zero_plan_skip_count + self.singleton_skip_count
+                     + self.multiple_plan_decision_count
+                     + self.missing_position_count
+                     + self.terminal_suppressed_event_count)
+        if accounted > self.detector_event_count:
+            fail(11, "plan decisions + skips {} > detector_event_count {}"
+                 .format(accounted, self.detector_event_count))
+
+        # I12: only a multiple-plan event may become a considered request. A
+        # zero-plan or singleton event must never reach the cache or a provider,
+        # so this equality is what proves those skips cost nothing.
+        if self.multiple_plan_decision_count != self.provider_request_considered_count:
+            fail(12, "multiple_plan_decision_count {} != "
+                     "provider_request_considered_count {}".format(
+                         self.multiple_plan_decision_count,
+                         self.provider_request_considered_count))
+
+        # I13: guidance can only have been activated by a genuine choice.
+        if self.guidance_activation_count > self.multiple_plan_decision_count:
+            fail(13, "guidance_activation_count {} > multiple_plan_decision_count {}"
+                 .format(self.guidance_activation_count,
+                         self.multiple_plan_decision_count))
 
         return problems
 

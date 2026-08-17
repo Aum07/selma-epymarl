@@ -30,7 +30,7 @@ SENTINEL_KEY = "sk-live-pilot-sentinel-DO-NOT-LEAK-0123456789"
 
 
 class ScriptedResponses:
-    """Answers every request with one valid id per agent, taken from the enum.
+    """Answers every request with one offered joint-plan id, taken from the enum.
 
     The ids come out of the request's own JSON Schema, so the fake behaves like a
     compliant structured-output implementation and the pilot's grounding check is
@@ -51,17 +51,11 @@ class ScriptedResponses:
                                        or self.calls > self.fail_after):
             raise self.error
         offered = pilot._offered_ids_from_kwargs(kwargs)
-        chosen, seen = [], set()
-        for assignment_id in offered:
-            agent = assignment_id.split("@", 1)[0]
-            if agent in seen:
-                continue
-            seen.add(agent)
-            chosen.append(assignment_id)
+        chosen = offered[0] if offered else "plan_0"
         if self.invented:
-            chosen = ["a99@0,0"]
+            chosen = "plan_99999"
         return pilot._fake_response(
-            json.dumps({"assignment_ids": chosen, "confidence": 0.8}),
+            json.dumps({"selected_plan_id": chosen, "confidence": 0.8}),
             model=self.model)
 
 
@@ -199,7 +193,7 @@ def test_a_silently_substituted_model_stops_the_pilot_after_one_attempt(live_env
     assert any("model snapshot" in g for g in failed)
 
 
-def test_an_invented_id_fails_the_probe_and_activates_no_guidance(live_env):
+def test_an_invented_plan_id_fails_the_probe_and_activates_no_guidance(live_env):
     code, report = run(live_env, ScriptedResponses(invented=True),
                        "--confirm-live", "--max-attempts", "30")
     assert code != 0
@@ -304,7 +298,7 @@ def test_cost_is_not_calculated_without_a_dated_price_table(full_pilot):
 def test_versions_are_recorded_for_reproducibility(full_pilot):
     _code, report = full_pilot
     assert report["requested_model"] == MODEL_SNAPSHOT
-    assert report["prompt_version"] == "selma_guidance_prompt_v2"
+    assert report["prompt_version"] == "selma_guidance_prompt_v3"
     assert report["response_schema_version"]
     assert report["cache_key_version"]
     assert report["cache_schema_version"]
@@ -391,7 +385,6 @@ def test_greedy_evaluation_guard_is_present_in_the_runner():
 
 
 def test_every_frozen_fixture_offers_a_real_choice():
-    from selma.cache import candidate_assignment_ids
     from selma.provider import build_request
 
     fixtures = pilot.frozen_fixtures()
@@ -399,13 +392,15 @@ def test_every_frozen_fixture_offers_a_real_choice():
     names = [f["name"] for f in fixtures]
     assert len(set(names)) == len(names)
     for fixture in fixtures:
-        request = build_request(fixture["row"], agent_positions=fixture["positions"])
-        ids = candidate_assignment_ids(request)
-        per_agent = {}
-        for assignment_id in ids:
-            per_agent.setdefault(assignment_id.split("@")[0], set()).add(assignment_id)
-        assert len(ids) >= 2
-        assert all(len(v) >= 2 for v in per_agent.values()), fixture["name"]
+        request = build_request(fixture["row"], agent_positions=fixture["positions"],
+                                grid_shape=pilot.GRID_SHAPE)
+        plans = request.candidate_joint_plans
+        assert len(plans) >= 2, fixture["name"]
+        mappings = {json.dumps(p.mapping(), sort_keys=True) for p in plans}
+        assert len(mappings) == len(plans), fixture["name"]
+        for plan in plans:
+            assert len(set(plan.cells)) == len(plan.cells), fixture["name"]
+            assert sorted(plan.agent_ids) == sorted(request.recipient_agents)
 
 
 def test_translated_and_mirrored_layouts_stay_distinct_under_scheme_b():
@@ -415,11 +410,12 @@ def test_translated_and_mirrored_layouts_stay_distinct_under_scheme_b():
     context = dict(condition=pilot.CONDITION, grid_shape=pilot.GRID_SHAPE,
                    provider="openai", model_snapshot=MODEL_SNAPSHOT,
                    reasoning_effort="none",
-                   prompt_version="selma_guidance_prompt_v2",
-                   response_schema_version="selma_guidance_response_schema_v1")
+                   prompt_version="selma_guidance_prompt_v3",
+                   response_schema_version="selma_guidance_response_schema_v2")
     digests = {}
     for fixture in pilot.frozen_fixtures():
-        request = build_request(fixture["row"], agent_positions=fixture["positions"])
+        request = build_request(fixture["row"], agent_positions=fixture["positions"],
+                                grid_shape=pilot.GRID_SHAPE)
         digests[fixture["name"]] = key_digest(
             canonical_json(build_cache_key(request, **context)))
     assert len(set(digests.values())) == len(digests), digests
@@ -434,11 +430,12 @@ def test_replayed_metadata_does_not_change_the_cache_key():
     context = dict(condition=pilot.CONDITION, grid_shape=pilot.GRID_SHAPE,
                    provider="openai", model_snapshot=MODEL_SNAPSHOT,
                    reasoning_effort="none",
-                   prompt_version="selma_guidance_prompt_v2",
-                   response_schema_version="selma_guidance_response_schema_v1")
+                   prompt_version="selma_guidance_prompt_v3",
+                   response_schema_version="selma_guidance_response_schema_v2")
 
     def digest_of(fixture):
-        request = build_request(fixture["row"], agent_positions=fixture["positions"])
+        request = build_request(fixture["row"], agent_positions=fixture["positions"],
+                                grid_shape=pilot.GRID_SHAPE)
         return key_digest(canonical_json(build_cache_key(request, **context)))
 
     for fixture in pilot.frozen_fixtures():

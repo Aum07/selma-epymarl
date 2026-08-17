@@ -285,21 +285,23 @@ def test_unknown_provider_is_rejected_at_configuration_time():
 
 def test_build_request_requires_agent_positions():
     with pytest.raises(MissingAgentPositionError):
-        build_request(event_row(), agent_positions={})
+        build_request(event_row(), agent_positions={}, grid_shape=GRID)
 
 
 def test_build_request_rejects_partial_agent_positions():
     with pytest.raises(MissingAgentPositionError):
-        build_request(event_row(), agent_positions={0: (4, 3)})  # agent 1 missing
+        build_request(event_row(), agent_positions={0: (4, 3)},
+                      grid_shape=GRID)  # agent 1 missing
 
 
 def test_build_request_rejects_none_positions():
     with pytest.raises(MissingAgentPositionError):
-        build_request(event_row(), agent_positions=None)
+        build_request(event_row(), agent_positions=None, grid_shape=GRID)
 
 
 def test_build_request_uses_the_supplied_positions():
-    req = build_request(event_row(), agent_positions={0: (4, 3), 1: (6, 6)})
+    req = build_request(event_row(), agent_positions={0: (4, 3), 1: (6, 6)},
+                        grid_shape=GRID)
     assert [ctx.position for ctx in req.agent_context] == [(4, 3), (6, 6)]
     assert all(ctx.position != (-1, -1) for ctx in req.agent_context)
 
@@ -375,7 +377,8 @@ def test_build_request_consumes_a_real_detector_row():
     """Schema fidelity: every key build_request reads exists in a real row."""
     row, positions = real_detector_event_row()
     agent_positions = {i: p for i, p in enumerate(positions)}
-    request = build_request(row, agent_positions=agent_positions)
+    request = build_request(row, agent_positions=agent_positions,
+                            grid_shape=GRID)
     assert request.event_id == row["event_id"]
     assert tuple(request.food_id) == tuple(row["food_id"])
     assert set(request.recipient_agents) == set(row["recipient_ids"])
@@ -390,14 +393,15 @@ def test_real_detector_row_lacks_agent_positions_so_they_must_be_injected():
     row, _ = real_detector_event_row()
     assert "agent_positions" not in row
     with pytest.raises(MissingAgentPositionError):
-        build_request(row, agent_positions={})
+        build_request(row, agent_positions={}, grid_shape=GRID)
 
 
 def test_real_detector_row_drives_a_valid_mock_response():
     from selma.provider import validate
 
     row, positions = real_detector_event_row()
-    request = build_request(row, agent_positions={i: p for i, p in enumerate(positions)})
+    request = build_request(row, agent_positions={i: p for i, p in enumerate(positions)},
+                            grid_shape=GRID)
     verdict = validate(request, DeterministicMockProvider().query(request))
     assert verdict.valid, verdict.reason
 

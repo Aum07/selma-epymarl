@@ -1,5 +1,49 @@
 # SELMA Stage D — live provider contract validation
 
+> ## ⚠ POST-PILOT CORRECTION (added 2026-08-16, after this record was written)
+>
+> **A defect was found in the validator this pilot ran against. Read this before
+> reading anything below.** Nothing below has been edited or removed: the original
+> record and the commit that produced it (`10417e6`) stand as immutable historical
+> evidence of what was actually observed and claimed at the time.
+>
+> **What still holds.** API compatibility passed. The exact snapshot
+> `gpt-5.4-nano-2026-03-17` answered; `store=false`, `reasoning: none`, strict
+> structured output, no tools and no streaming were all accepted; strict
+> structured-output parsing succeeded on 10/10 responses; every selected id was
+> one of the offered ids (offered-ID grounding, 10/10); the cache, budget and
+> accounting behaviour and every ledger reconciled. Those results are unaffected.
+>
+> **What did not hold.** *Strong physical-plan validity failed on 1 of the 10
+> pilot fixtures.* On `two_cells_only` the model returned `a0@5,4` **and**
+> `a1@5,4` — both agents assigned to the same loading cell, which LBF cannot
+> realise. It is recorded truthfully in §8.2 below as a limitation, but it was
+> under-classified: it is a semantic-validity **failure**, not a stylistic
+> preference the model declined to follow.
+>
+> **The "zero invalid guidance activated" gate in §6.2 and §7 must be read
+> narrowly.** It meant *zero guidance rejected by the validator as it then
+> existed*. That validator checked each assignment independently against the
+> offered cells and never examined the selected combination, so it could not
+> express "no two agents share a cell" and duly accepted the invalid plan. Under
+> the corrected joint-plan validator the same response is rejected
+> (`plan_duplicate_cell`). The gate as worded overstated what had been verified.
+>
+> **No training used the invalid plan.** This pilot ran no training, no learner
+> and no environment; `beta` was `0.0` and `training_reward == raw_team_reward`
+> on every transition. The invalid plan influenced no policy, no reward and no
+> stored artefact.
+>
+> **What it motivated.** This discovery is the direct cause of the joint-plan
+> contract: the code now enumerates only physically valid *complete* plans and the
+> model selects exactly one by id, so a duplicate cell is not a bad answer to be
+> caught but an answer that cannot be expressed. See
+> [`selma_stage_d_joint_plan_acceptance_2026-08-16.md`](selma_stage_d_joint_plan_acceptance_2026-08-16.md).
+>
+> The cache written by this pilot is **not** reused: `CACHE_SCHEMA_VERSION` and
+> `CACHE_KEY_VERSION` were both bumped, so a pilot-era database cannot be opened
+> and a pilot-era digest cannot be recomputed.
+
 **Date:** 2026-08-16
 **Branch:** `stage-d-live-pilot`
 **Starting commit:** `29459e3f1bfa1756e052ca38df4e5741fc16ab0e` (*selma: add Stage D provider cache infrastructure*)
@@ -307,6 +351,14 @@ made no network connection.
    the model did not follow it here. **Open decision:** whether `validate` should reject
    duplicate loading cells. That is a change to the frozen Stage C validator and was
    deliberately *not* made in this pilot.
+
+   > **RESOLVED — and reclassified.** This was a semantic-validity *failure*, not a
+   > limitation. The answer was: not a duplicate-cell check bolted onto the existing
+   > per-assignment validator, but a change of contract — the code enumerates
+   > complete, physically valid joint plans and the model selects one by id. See the
+   > correction notice at the top of this document and
+   > [`selma_stage_d_joint_plan_acceptance_2026-08-16.md`](selma_stage_d_joint_plan_acceptance_2026-08-16.md).
+   > The same fixture now returns `a0@5,4; a1@5,6` — distinct cells.
 
 3. **Assignments are frequently valid but not distance-optimal.** On `far_helper` and
    `deficit3_single_helper` the model moved an agent off a loading cell it already

@@ -64,7 +64,8 @@ def event_row(event_id="ep1-wf15_m3_t5_ibon-food4,4-t3", recipients=(0, 1),
 
 
 def request_for(row=None, positions=None):
-    return build_request(row or event_row(), agent_positions=positions or POSITIONS)
+    return build_request(row or event_row(), agent_positions=positions or POSITIONS,
+                         grid_shape=GRID)
 
 
 def controller(beta=0.0, gamma=0.99, provider=None):
@@ -151,12 +152,15 @@ def _good(req):
     (lambda r: r._replace(schema_version="v0"), "schema_version_mismatch"),
     (lambda r: r._replace(event_id="other"), "event_id_mismatch"),
     (lambda r: r._replace(recipients=()), "empty_recipients"),
-    (lambda r: r._replace(recipients=(0, 1, 7)), "recipients_not_subset"),
+    (lambda r: r._replace(recipients=(0, 1, 7)), "recipients_not_exact"),
     (lambda r: r._replace(target_food_id=(1, 9, 9)), "target_food_mismatch"),
+    # joint-plan v2: validity is a property of the whole mapping, so these two
+    # now fail as plan violations rather than as per-assignment problems.
     (lambda r: r._replace(assignments=tuple(list(r.assignments) + [r.assignments[0]])),
-     "duplicate_agent_assignment"),
-    (lambda r: r._replace(assignments=(Assignment(0, "hold_and_load", (7, 7)),)),
-     "assignment_recipient_mismatch"),
+     "plan_duplicate_agent"),
+    (lambda r: r._replace(assignments=(Assignment(0, "hold_and_load", (4, 3)),)),
+     "plan_recipients_not_exact"),
+    (lambda r: r._replace(selected_plan_id="plan_9999"), "unknown_plan_id"),
     (lambda r: r._replace(confidence=1.5), "confidence_out_of_range"),
 ])
 def test_malformed_response_is_rejected(mutate, reason):
@@ -168,12 +172,26 @@ def test_malformed_response_is_rejected(mutate, reason):
 
 
 def test_cell_not_offered_is_rejected():
+    """Adjacent to the food and inside the grid, but never offered."""
     req = request_for()
     good = _good(req)
+    unoffered = [(5, 4), (4, 5)]
     bad = good._replace(assignments=tuple(
-        Assignment(a.agent_id, a.role, (0, 0)) for a in good.assignments))
+        Assignment(a.agent_id, a.role, cell)
+        for a, cell in zip(good.assignments, unoffered)))
     v = validate(req, bad)
-    assert not v.valid and v.reason == "loading_cell_not_offered"
+    assert not v.valid and v.reason == "plan_cell_not_offered"
+
+
+def test_two_agents_on_one_cell_is_rejected():
+    """The live-pilot defect, pinned in the Stage C suite as well."""
+    req = request_for()
+    good = _good(req)
+    shared = tuple(good.assignments[0].loading_cell)
+    bad = good._replace(assignments=tuple(
+        Assignment(a.agent_id, a.role, shared) for a in good.assignments))
+    v = validate(req, bad)
+    assert not v.valid and v.reason == "plan_duplicate_cell"
 
 
 def test_role_not_allowed_is_rejected():
@@ -196,7 +214,8 @@ def test_rejected_response_yields_zero_shaping_and_no_guidance():
         def query(self, request):
             self.call_count += 1
             return GuidanceResponse(SCHEMA_VERSION, "wrong-id", (0,), request.food_id,
-                                    (0,), (Assignment(0, "hold_and_load", (4, 3)),), 1.0)
+                                    (0,), "plan_0",
+                                    (Assignment(0, "hold_and_load", (4, 3)),), 1.0)
     c = controller(beta=1.0, provider=BadProvider())
     record = offer(c, [event_row()])
     assert c.active is None

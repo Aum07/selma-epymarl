@@ -45,8 +45,8 @@ MODEL = "gpt-5.4-nano-2026-03-17"
 
 KEY_CONTEXT = dict(
     condition=CONDITION, grid_shape=GRID, provider="openai", model_snapshot=MODEL,
-    reasoning_effort="none", prompt_version="selma_guidance_prompt_v1",
-    response_schema_version="selma_guidance_response_schema_v1",
+    reasoning_effort="none", prompt_version="selma_guidance_prompt_v3",
+    response_schema_version="selma_guidance_response_schema_v2",
 )
 
 
@@ -76,9 +76,10 @@ def event_row(episode_id=7, food_pos=FOOD, recipients=(0, 1),
     }
 
 
-def make_request(positions=None, **row_kwargs):
+def make_request(positions=None, grid_shape=GRID, **row_kwargs):
     positions = positions or {0: (4, 3), 1: (6, 6)}
-    return build_request(event_row(**row_kwargs), agent_positions=positions)
+    return build_request(event_row(**row_kwargs), agent_positions=positions,
+                         grid_shape=grid_shape)
 
 
 def key_of(request, **overrides):
@@ -138,7 +139,8 @@ def test_changed_helper_coalition_changes_the_key():
 def test_changed_recipient_set_changes_the_key():
     base = make_request()
     other = build_request(
-        event_row(recipients=(0,)), agent_positions={0: (4, 3), 1: (6, 6)})
+        event_row(recipients=(0,)), agent_positions={0: (4, 3), 1: (6, 6)},
+        grid_shape=GRID)
     assert key_of(base) != key_of(other)
 
 
@@ -154,7 +156,7 @@ def test_candidate_loading_cells_change_the_key():
 @pytest.mark.parametrize("field,value", [
     ("prompt_version", "selma_guidance_prompt_v2"),
     ("model_snapshot", "gpt-5.4-nano-2026-09-01"),
-    ("response_schema_version", "selma_guidance_response_schema_v2"),
+    ("response_schema_version", "selma_guidance_response_schema_v9"),
     ("provider", "some_other_provider"),
     ("reasoning_effort", "low"),
     ("condition", "lbforaging:Foraging-10x10-3p-3f-v3"),
@@ -167,9 +169,9 @@ def test_version_and_provider_changes_cause_a_miss(field, value):
 def test_canonical_ordering_produces_the_same_key():
     """Input ordering must not matter: only content does."""
     a = build_request(event_row(recipients=(0, 1), cells=((4, 3), (3, 4))),
-                      agent_positions={0: (4, 3), 1: (6, 6)})
+                      agent_positions={0: (4, 3), 1: (6, 6)}, grid_shape=GRID)
     b = build_request(event_row(recipients=(1, 0), cells=((3, 4), (4, 3))),
-                      agent_positions={1: (6, 6), 0: (4, 3)})
+                      agent_positions={1: (6, 6), 0: (4, 3)}, grid_shape=GRID)
     assert key_of(a) == key_of(b)
     assert key_digest(key_of(a)) == key_digest(key_of(b))
 
@@ -222,8 +224,8 @@ def put(cache, request, response, **overrides):
         response_payload=response_to_dict(response),
         metadata={"request_id": "resp_123", "input_tokens": 11},
         provider="openai", requested_model=MODEL, returned_model=MODEL,
-        reasoning_effort="none", prompt_version="selma_guidance_prompt_v1",
-        response_schema_version="selma_guidance_response_schema_v1",
+        reasoning_effort="none", prompt_version="selma_guidance_prompt_v3",
+        response_schema_version="selma_guidance_response_schema_v2",
     )
     return digest, canonical
 

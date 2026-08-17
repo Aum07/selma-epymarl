@@ -59,7 +59,7 @@ from selma.cache import (  # noqa: E402
     CACHE_KEY_VERSION,
     CACHE_SCHEMA_VERSION,
     SqliteGuidanceCache,
-    candidate_assignment_ids,
+    candidate_plan_ids,
 )
 from selma.gateway import (  # noqa: E402
     CACHE_READ_ONLY,
@@ -263,9 +263,10 @@ def sanitise_exception(error):
 
 
 def _offered_ids_from_kwargs(kwargs):
+    """The joint-plan ids the request actually offered, read off its own schema."""
     try:
         schema = kwargs["text"]["format"]["schema"]
-        return list(schema["properties"]["assignment_ids"]["items"]["enum"])
+        return list(schema["properties"]["selected_plan_id"]["enum"])
     except (KeyError, TypeError):
         return []
 
@@ -284,8 +285,12 @@ def _selected_ids_from_response(response):
         payload = json.loads(text)
     except (ValueError, TypeError):
         return None
-    ids = payload.get("assignment_ids") if isinstance(payload, dict) else None
-    return ids if isinstance(ids, list) else None
+    if not isinstance(payload, dict):
+        return None
+    plan_id = payload.get("selected_plan_id")
+    # Exactly one id, always rendered as a one-element list so the downstream
+    # grounding arithmetic is unchanged.
+    return [plan_id] if isinstance(plan_id, str) and plan_id else None
 
 
 class LedgeringResponses:
@@ -408,8 +413,9 @@ class Phase:
         before_calls = self.accounting.live_api_call_count
         before_activations = self.accounting.guidance_activation_count
 
-        request = build_request(fixture["row"], agent_positions=fixture["positions"])
-        offered = candidate_assignment_ids(request)
+        request = build_request(fixture["row"], agent_positions=fixture["positions"],
+                                grid_shape=GRID_SHAPE)
+        offered = candidate_plan_ids(request)
 
         self.controller.reset_episode()
         record = self.controller.apply_transition(
@@ -442,6 +448,8 @@ class Phase:
             "beta": record.beta,
             "shaping_contribution": record.shaping_contribution,
             "reward_unchanged": record.training_reward == record.raw_team_reward,
+            "selected_plan_id": (
+                record.selected_plan_id if record.selected_plan_id else ""),
             "selected_assignments": (
                 sorted("a{}@{},{}".format(a, c[1][0], c[1][1])
                        for a, c in active.assignments.items())
@@ -450,8 +458,17 @@ class Phase:
             "tokens_completion": getattr(usage, "tokens_completion", None),
             "latency_s": getattr(usage, "latency_s", None),
         }
-        result["all_selected_ids_offered"] = all(
-            i in set(offered) for i in result["selected_assignments"])
+        result["all_selected_ids_offered"] = (
+            not result["selected_plan_id"]
+            or result["selected_plan_id"] in set(offered))
+        # The whole point of the correction: an activated plan must be
+        # physically realisable -- distinct agents on distinct cells.
+        cells = [tuple(c) for _a, c in
+                 (active.assignments.values() if active is not None else [])]
+        agents = list(active.assignments) if active is not None else []
+        result["distinct_cells"] = len(set(cells)) == len(cells)
+        result["distinct_agents"] = len(set(agents)) == len(agents)
+        result["physically_valid"] = result["distinct_cells"] and result["distinct_agents"]
         self.records.append(result)
         return result
 
@@ -512,16 +529,21 @@ def offline_invalid_response_gates(tmpdir):
     """
     fixture = frozen_fixtures()[0]
     cases = [
-        ("invented_id", _fake_response(json.dumps(
-            {"assignment_ids": ["a9@1,1"], "confidence": 0.9}))),
-        ("duplicate_id", _fake_response(json.dumps(
-            {"assignment_ids": ["a0@4,3", "a0@4,3"], "confidence": 0.9}))),
-        ("missing_recipient", _fake_response(json.dumps(
-            {"assignment_ids": ["a0@4,3"], "confidence": 0.9}))),
+        ("invented_plan_id", _fake_response(json.dumps(
+            {"selected_plan_id": "plan_9999", "confidence": 0.9}))),
+        # The superseded contract: a list of independently composable per-agent
+        # ids. This is the shape that produced two agents on one cell in the
+        # pilot; it must now be unrepresentable and rejected outright.
+        ("legacy_assignment_id_list", _fake_response(json.dumps(
+            {"assignment_ids": ["a0@4,3", "a1@4,3"], "confidence": 0.9}))),
+        ("duplicate_cell_attempt", _fake_response(json.dumps(
+            {"selected_plan_id": "plan_0", "assignment_ids": ["a0@4,3", "a1@4,3"],
+             "confidence": 0.9}))),
+        ("missing_plan_id", _fake_response(json.dumps({"confidence": 0.9}))),
         ("malformed_body", _fake_response("not json at all")),
         ("refusal", _fake_response(None, refusal="I will not answer")),
         ("incomplete", _fake_response(json.dumps(
-            {"assignment_ids": ["a0@4,3", "a1@3,4"], "confidence": 0.9}),
+            {"selected_plan_id": "plan_0", "confidence": 0.9}),
             status="incomplete")),
         ("transport_failure", _FakeTimeoutError()),
     ]
@@ -551,6 +573,39 @@ def offline_invalid_response_gates(tmpdir):
                        and not problems),
         })
     return results
+
+
+def _fixture_plan_validity(fixtures):
+    """Prove every plan the code will offer is physically realisable.
+
+    Checked here, before any request, with the same predicate the validator uses
+    -- so the pilot never asks a model to choose among options that a later gate
+    would have to reject.
+    """
+    from selma.joint_plans import plan_violations
+
+    out = []
+    for fixture in fixtures:
+        request = build_request(fixture["row"], agent_positions=fixture["positions"],
+                                grid_shape=GRID_SHAPE)
+        cells = sorted({tuple(int(x) for x in c)
+                        for c in fixture["row"]["candidate_loading_cells"]})
+        problems = []
+        for plan in request.candidate_joint_plans:
+            problems.extend(plan_violations(
+                plan.assignments, recipient_agents=request.recipient_agents,
+                candidate_cells=cells, food_position=request.food_position,
+                grid_shape=GRID_SHAPE))
+        out.append({
+            "fixture": fixture["name"],
+            "plan_count": len(request.candidate_joint_plans),
+            "all_plans_valid": not problems,
+            "violations": sorted(set(problems)),
+            "all_plans_use_distinct_cells": all(
+                len(set(p.cells)) == len(p.cells)
+                for p in request.candidate_joint_plans),
+        })
+    return out
 
 
 def greedy_evaluation_gate():
@@ -662,11 +717,15 @@ def main(argv=None):
         fixtures = frozen_fixtures()
         report["fixture_count"] = len(fixtures)
         report["candidate_count_distribution"] = distribution(
-            len(candidate_assignment_ids(
-                build_request(f["row"], agent_positions=f["positions"])))
+            len(candidate_plan_ids(
+                build_request(f["row"], agent_positions=f["positions"],
+                              grid_shape=GRID_SHAPE)))
             for f in fixtures)
-        gate("every fixture offers multiple candidate assignments",
+        gate("every fixture offers at least two valid joint plans",
              all(int(k) >= 2 for k in report["candidate_count_distribution"]))
+        report["joint_plan_validity"] = _fixture_plan_validity(fixtures)
+        gate("every offered joint plan is physically valid",
+             all(f["all_plans_valid"] for f in report["joint_plan_validity"]))
 
         if not args.confirm_live:
             report["live"] = {"status": "skipped",
@@ -887,6 +946,12 @@ def _run_live(fixtures, workdir, ledger, attempt_cap, gate):
         "selected_assignment_distribution": distribution(
             ";".join(r["selected_assignments"])
             for r in all_records if r["selected_assignments"]),
+        "selected_plan_id_distribution": distribution(
+            r["selected_plan_id"] for r in all_records if r["selected_plan_id"]),
+        "activated_plans_physically_valid": sum(
+            1 for r in all_records if r["activated"] and r["physically_valid"]),
+        "activated_plans_physically_invalid": sum(
+            1 for r in all_records if r["activated"] and not r["physically_valid"]),
         "guidance_activations": sum(r["activated"] for r in all_records),
         "cache_hits": sum(1 for r in all_records if r["served_from"] == "cache"),
         "cache_misses": sum(1 for r in all_records if r["served_from"] == "live"),
@@ -899,8 +964,15 @@ def _run_live(fixtures, workdir, ledger, attempt_cap, gate):
          live["metrics"]["invented_or_unoffered_ids"] == 0)
     gate("zero invalid guidance activated",
          all(r["activated"] == 0 for r in all_records if r["provider_valid"] == 0))
-    gate("every activated assignment came from the offered id set",
+    gate("every activated plan came from the offered plan-id set",
          all(r["all_selected_ids_offered"] for r in all_records if r["activated"]))
+    # The regression this whole correction exists for.
+    gate("every activated plan has distinct agents and distinct cells",
+         all(r["physically_valid"] for r in all_records if r["activated"]),
+         {"invalid": [r["fixture"] for r in all_records
+                      if r["activated"] and not r["physically_valid"]]})
+    gate("zero physically invalid guidance activated",
+         live["metrics"]["activated_plans_physically_invalid"] == 0)
     gate("beta stayed zero and no reward was altered",
          all(r["beta"] == 0.0 and r["reward_unchanged"] for r in all_records))
 

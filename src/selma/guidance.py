@@ -91,10 +91,11 @@ class ActiveGuidance:
 
     __slots__ = ("event_id", "subgoal_id", "food_id", "food_position", "recipients",
                  "assignments", "activated_step", "provider_id", "transitions_served",
-                 "trigger_agent_ids")
+                 "trigger_agent_ids", "selected_plan_id")
 
     def __init__(self, event_id, subgoal_id, food_id, food_position, recipients,
-                 assignments, activated_step, provider_id, trigger_agent_ids=()):
+                 assignments, activated_step, provider_id, trigger_agent_ids=(),
+                 selected_plan_id=""):
         self.event_id = event_id
         self.subgoal_id = subgoal_id
         self.food_id = tuple(food_id)
@@ -104,6 +105,8 @@ class ActiveGuidance:
         self.activated_step = int(activated_step)
         self.provider_id = provider_id
         self.trigger_agent_ids = tuple(int(a) for a in trigger_agent_ids)
+        #: Which code-built joint plan the provider selected.
+        self.selected_plan_id = str(selected_plan_id or "")
         #: Transitions for which this guidance has been ``guidance_before``.
         self.transitions_served = 0
 
@@ -183,6 +186,7 @@ class TransitionRecord(NamedTuple):
     trigger_agent_ids: Tuple[int, ...]
     recipient_agent_ids: Tuple[int, ...]
     target_food_id: object
+    selected_plan_id: str
     query_triggered: int
     queries: int
     provider_valid: int
@@ -224,6 +228,9 @@ class GuidanceController:
         self.total_pbrs_unscaled = 0.0
         self.total_shaping_contribution = 0.0
         self.fallback_reasons = {}
+        #: Joint-plan skips, kept apart from ``fallback_reasons`` because no
+        #: request was ever considered for them.
+        self.skip_reasons = {}
         self.expiry_reasons = {}
         self.last_transition = TRANSITION_NONE
         self._subgoal_counter = 0
@@ -284,7 +291,31 @@ class GuidanceController:
 
         Returns ``(queried, activated, provider_valid, fallback_reason)``. A
         rejected response never partially applies: no active subgoal, Phi = 0.
+
+        **Joint-plan policy** (frozen; see
+        ``docs/project/selma_stage_d_joint_plan_acceptance_2026-08-16.md``).
+        The code enumerates every physically valid joint plan before anything
+        else happens, and the plan count decides the path:
+
+        * **zero plans** -- nothing feasible to advise. No provider call, no
+          cache lookup, no guidance, ``F_t = 0``, reason
+          ``no_valid_joint_plan``;
+        * **exactly one plan** -- the "choice" is forced, so consulting a model
+          would buy nothing and would spend a live call to be told the only
+          answer. No provider call, no cache lookup, no guidance, ``F_t = 0``,
+          reason ``singleton_no_choice``. Every activated LLM subgoal is
+          therefore one that was selected from at least two valid alternatives;
+        * **two or more plans** -- the normal cache -> provider -> validate path.
+
+        The two skips are *not* a heuristic fallback: they activate nothing.
+        They are also not fallbacks in the accounting sense -- no request was
+        considered, so they must never touch the live-call, cache-hit or
+        cache-miss counters (accounting invariants I11-I13).
         """
+        from selma.accounting import (
+            SKIP_NO_VALID_JOINT_PLAN,
+            SKIP_SINGLETON_NO_CHOICE,
+        )
         from selma.provider import (
             REASON_MISSING_AGENT_POSITION,
             MissingAgentPositionError,
@@ -298,7 +329,8 @@ class GuidanceController:
         fallback = ""
         for row in self._eligible(event_rows):
             try:
-                request = build_request(row, agent_positions=agent_positions)
+                request = build_request(row, agent_positions=agent_positions,
+                                        grid_shape=self.grid_shape)
             except MissingAgentPositionError:
                 # Documented rejection: no provider call, no guidance, F_t = 0.
                 # No request was built, so this is *not* a considered request
@@ -309,6 +341,22 @@ class GuidanceController:
                 if self.accounting is not None:
                     self.accounting.missing_position_count += 1
                 continue
+
+            # -- joint-plan policy, applied before any cache or provider -----
+            plan_count = len(request.candidate_joint_plans)
+            if plan_count < 2:
+                skip = (SKIP_NO_VALID_JOINT_PLAN if plan_count == 0
+                        else SKIP_SINGLETON_NO_CHOICE)
+                fallback = skip
+                self.skip_reasons[skip] = self.skip_reasons.get(skip, 0) + 1
+                if self.accounting is not None:
+                    if plan_count == 0:
+                        self.accounting.zero_plan_skip_count += 1
+                    else:
+                        self.accounting.singleton_skip_count += 1
+                continue
+            if self.accounting is not None:
+                self.accounting.multiple_plan_decision_count += 1
 
             self.query_count += 1
             self.provider_call_count += 1
@@ -349,6 +397,7 @@ class GuidanceController:
                 activated_step=step,
                 provider_id=getattr(self.provider, "provider_id", "unknown"),
                 trigger_agent_ids=row.get("trigger_agent_ids", ()) or (),
+                selected_plan_id=getattr(verdict.response, "selected_plan_id", ""),
             )
             activated += 1
             if self.accounting is not None:
@@ -453,6 +502,7 @@ class GuidanceController:
             trigger_agent_ids=guidance.trigger_agent_ids if guidance else (),
             recipient_agent_ids=guidance.recipients if guidance else (),
             target_food_id=guidance.food_id if guidance else "",
+            selected_plan_id=guidance.selected_plan_id if guidance else "",
             query_triggered=int(queried > 0),
             queries=queried,
             provider_valid=provider_valid,
@@ -517,7 +567,8 @@ class GuidanceCsvWriter:
         "t_env", "condition", "seed", "episode_id", "episode_step",
         "condition_checked", "query_triggered", "queries",
         "event_id", "subgoal_id", "trigger_agent_ids", "recipient_agent_ids",
-        "target_food_id", "provider", "provider_valid", "fallback_reason",
+        "target_food_id", "selected_plan_id",
+        "provider", "provider_valid", "fallback_reason",
         "guidance_active", "guidance_transition", "guidance_age",
         "transitions_served", "expiry_reason",
         "terminal_cause", "stored_terminated",
@@ -555,6 +606,7 @@ class GuidanceCsvWriter:
             "recipient_agent_ids": ";".join(str(a) for a in record.recipient_agent_ids),
             "target_food_id": ";".join(str(x) for x in record.target_food_id)
             if record.target_food_id else "",
+            "selected_plan_id": record.selected_plan_id,
             "provider": getattr(controller.provider, "provider_id", ""),
             "provider_valid": record.provider_valid,
             "fallback_reason": record.fallback_reason,
@@ -591,8 +643,33 @@ class GuidanceCsvWriter:
             "terminal_suppressed_events": controller.terminal_suppressed_events,
         }
         need_header = not os.path.exists(self.path) or os.path.getsize(self.path) == 0
+        if not need_header:
+            self._assert_header_matches()
         with open(self.path, "a", newline="") as handle:
             writer = csv.DictWriter(handle, fieldnames=self.COLUMNS)
             if need_header:
                 writer.writeheader()
             writer.writerow(row)
+
+    def _assert_header_matches(self):
+        """Refuse to append rows under a header from a different build.
+
+        ``DictWriter`` writes values in *this* build's column order. Appending to
+        a file whose header has different columns therefore shifts every value
+        silently -- a reader then parses one column as another and, if the types
+        happen to line up, never notices. That is exactly what happened when
+        ``selected_plan_id`` was added and a stale log from the previous build
+        was still on disk: the verifier read an empty string where
+        ``pbrs_term_unscaled`` should have been. Fail loudly instead.
+        """
+        with open(self.path, "r", newline="") as handle:
+            existing = next(csv.reader(handle), None)
+        if existing is not None and tuple(existing) != tuple(self.COLUMNS):
+            missing = [c for c in self.COLUMNS if c not in existing]
+            extra = [c for c in existing if c not in self.COLUMNS]
+            raise ValueError(
+                "refusing to append to {!r}: its header was written by a "
+                "different build. Appending would shift every column silently. "
+                "Missing here: {}; unexpected: {}. Delete or move the old log."
+                .format(self.path, missing or "none", extra or "none")
+            )

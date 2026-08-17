@@ -54,7 +54,8 @@ from selma.accounting import (
     FALLBACK_TIMEOUT,
     FALLBACK_TRANSPORT,
 )
-from selma.cache import candidate_assignment_ids
+from selma.cache import candidate_plan_ids
+from selma.joint_plans import describe_plan
 from selma.provider import (
     ROLE_APPROACH_AND_LOAD,
     ROLE_HOLD_AND_LOAD,
@@ -68,8 +69,8 @@ PROVIDER_ID = "openai"
 API_SURFACE = "responses"
 MODEL_SNAPSHOT = "gpt-5.4-nano-2026-03-17"
 REASONING_EFFORT = "none"
-PROMPT_VERSION = "selma_guidance_prompt_v2"
-RESPONSE_SCHEMA_VERSION = "selma_guidance_response_schema_v1"
+PROMPT_VERSION = "selma_guidance_prompt_v3"
+RESPONSE_SCHEMA_VERSION = "selma_guidance_response_schema_v2"
 API_KEY_ENV = "OPENAI_API_KEY"
 
 DEFAULT_TIMEOUT_S = 30.0
@@ -84,13 +85,17 @@ SYSTEM_PROMPT = (
     "cells orthogonally adjacent to that food all play the LOAD action on the "
     "same step and the sum of their levels is at least the food's level. An "
     "agent whose own level is below the food's level therefore can never "
-    "collect it alone; it needs helpers on the other adjacent cells. "
-    "Your decision is exactly this: for each recipient agent, which adjacent "
-    "loading cell should it move to and load from. You express that decision "
-    "by choosing candidate assignment ids that the request supplies. "
-    "You may ONLY choose from candidate_assignment_ids: exactly one id per "
-    "recipient agent, no duplicates, no invented ids, and no coordinates of "
-    "your own. You do not decide rewards, discounting, shaping scale or "
+    "collect it alone; it needs helpers on the other adjacent cells. Two "
+    "agents can never occupy the same cell. "
+    "Your decision is exactly this: choose which of several complete, already "
+    "valid coordination plans the team should follow. Each candidate joint "
+    "plan is a full assignment of every recipient agent to its own distinct "
+    "loading cell; the plans were built and checked by code, so any of them is "
+    "physically achievable and you are only judging which is best. "
+    "You must return exactly one selected_plan_id, taken from the offered "
+    "candidate_joint_plans. You do not compose plans, combine parts of "
+    "different plans, invent plan ids, or supply coordinates, agents or roles "
+    "of your own. You do not decide rewards, discounting, shaping scale or "
     "subgoal lifetime."
 )
 
@@ -118,51 +123,53 @@ class ProviderUsageDetail(NamedTuple):
     returned_model: Optional[str] = None
 
 
-def response_json_schema(assignment_ids):
+def response_json_schema(plan_ids):
     """Strict JSON Schema for the structured output.
 
-    The selectable ids are enumerated in the schema itself, so a compliant
-    structured-output implementation cannot return an unknown id. The code still
-    re-checks, because the schema is a convenience and never the authority.
+    A single ``selected_plan_id`` drawn from an enumerated set. There is
+    deliberately **no array anywhere**: the pre-correction schema accepted a
+    list of independently composable per-agent ids, which is precisely the shape
+    that let a model return two agents on one cell. A list of parts is now
+    inexpressible, so that failure mode cannot be represented at all.
+
+    The code still re-checks the id and re-derives every joint constraint,
+    because the schema is a convenience and never the authority.
     """
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["assignment_ids", "confidence"],
+        "required": ["selected_plan_id", "confidence"],
         "properties": {
-            "assignment_ids": {
-                "type": "array",
-                "items": {"type": "string", "enum": list(assignment_ids)},
-            },
+            "selected_plan_id": {"type": "string", "enum": list(plan_ids)},
             "confidence": {"type": "number"},
         },
     }
 
 
-def build_prompt(request, assignment_ids):
+def build_prompt(request):
     """Deterministic user message. Pure function of the code-built request.
 
-    Prompt v2 adds ``candidates``: each offered id spelled out as the (agent,
-    loading cell) pair it denotes. v1 sent the ids as bare strings and never
-    said what ``a1@3,4`` meant, so the model was choosing between tokens whose
-    referents it had to guess. Nothing new is *offered* here -- ``candidates``
-    is derived from ``assignment_ids`` by the same parser the response check
-    uses, so the described set and the selectable set cannot drift apart.
+    Prompt v3 offers **complete joint plans**. Each entry states the plan's id,
+    its full agent-to-cell mapping, and a short rendering of that mapping, so an
+    id is never an opaque token the model has to guess the meaning of. The plans
+    come straight off the request, so the described set and the selectable
+    ``enum`` are the same set by construction and cannot drift apart.
 
     Nothing episode-scoped enters the payload: no ``event_id`` (which embeds
     the episode number), no ``food_id``, no seed, no step index, no timestamp.
     """
-    candidates = []
-    for assignment_id in assignment_ids:
-        parsed = parse_assignment_id(assignment_id)
-        if parsed is None:                       # unreachable for code-built ids
-            continue
-        agent_id, cell = parsed
-        candidates.append({
-            "assignment_id": assignment_id,
-            "agent_id": agent_id,
-            "loading_cell": [cell[0], cell[1]],
-        })
+    plans = [
+        {
+            "plan_id": plan.plan_id,
+            "assignments": [
+                {"agent_id": int(a.agent_id),
+                 "loading_cell": [int(a.loading_cell[0]), int(a.loading_cell[1])]}
+                for a in plan.assignments
+            ],
+            "description": describe_plan(plan),
+        }
+        for plan in request.candidate_joint_plans
+    ]
     payload = {
         "event_type": request.event_type,
         "target_food": {
@@ -180,37 +187,23 @@ def build_prompt(request, assignment_ids):
             }
             for c in sorted(request.agent_context, key=lambda c: int(c.agent_id))
         ],
-        "candidate_assignment_ids": list(assignment_ids),
-        "candidates": candidates,
+        "candidate_joint_plans": plans,
         "instructions": (
-            "Each candidate assignment id has the form a<agent_id>@<row>,<col>: "
-            "the agent it applies to, and the loading cell that agent should "
-            "occupy. The same pairs are listed in `candidates` with the agent "
-            "and cell spelled out. Positions are [row, col] on the same grid as "
-            "target_food.position. Choose exactly {n} id(s) -- one for each of "
-            "the {n} recipient agent(s) -- so that the recipients together "
-            "occupy cells adjacent to the target food and their levels sum to "
-            "at least target_food.level. Where several assignments are equally "
-            "feasible, prefer the one that reaches a loading configuration in "
-            "the fewest moves from the recipients' current positions, and "
-            "prefer giving different recipients different loading cells. "
-            "Return only ids from candidate_assignment_ids."
-        ).format(n=len(request.recipient_agents)),
+            "Each entry of candidate_joint_plans is a COMPLETE plan: it already "
+            "assigns every one of the {n} recipient agent(s) to its own "
+            "distinct loading cell adjacent to the target food. Positions and "
+            "loading cells are [row, col] on the same grid as "
+            "target_food.position. Every listed plan is already physically "
+            "valid and already satisfies the level requirement, so you are "
+            "choosing between good options, not checking them. "
+            "Return exactly one selected_plan_id, copied from the plan_id of "
+            "one of the {m} offered plans. Do not combine plans, do not return "
+            "more than one, and do not return anything that is not an offered "
+            "plan_id. Prefer the plan that reaches its loading configuration in "
+            "the fewest total moves from the recipients' current positions."
+        ).format(n=len(request.recipient_agents), m=len(plans)),
     }
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
-
-
-def parse_assignment_id(assignment_id):
-    """``a<agent>@<row>,<col>`` -> ``(agent_id, (row, col))``; ``None`` if malformed."""
-    try:
-        agent_part, cell_part = str(assignment_id).split("@", 1)
-        if not agent_part.startswith("a"):
-            return None
-        agent_id = int(agent_part[1:])
-        row_text, col_text = cell_part.split(",", 1)
-        return agent_id, (int(row_text), int(col_text))
-    except (ValueError, AttributeError):
-        return None
 
 
 def _classify(error):
@@ -337,17 +330,19 @@ class OpenAIGuidanceProvider(GuidanceProvider):
         ``None`` always means *no guidance*: the caller falls back to zero
         shaping. ``last_error`` carries the machine-readable reason.
         """
-        ids = candidate_assignment_ids(request)
+        plan_ids = candidate_plan_ids(request)
         self.last_error = ""
         self.last_attempts = 0
         self.last_usage = ProviderUsageDetail()
-        if not ids:
+        if len(plan_ids) < 2:
+            # Defence in depth. The controller already skips zero-plan and
+            # singleton events before any cache or provider is reached; if a
+            # caller bypasses that policy, no request leaves here either.
             self.last_error = FALLBACK_MALFORMED
             return None
 
-        schema = response_json_schema(ids)
-        prompt = build_prompt(request, ids)
-        allowed = {i: parse_assignment_id(i) for i in ids}
+        schema = response_json_schema(plan_ids)
+        prompt = build_prompt(request)
 
         for attempt in range(self.max_retries + 1):
             if self.attempt_hook is not None and not self.attempt_hook(attempt):
@@ -367,7 +362,7 @@ class OpenAIGuidanceProvider(GuidanceProvider):
                 return None
             self.call_count += 1
             latency = time.time() - started
-            response, reason = self._interpret(raw, request, allowed, latency)
+            response, reason = self._interpret(raw, request, latency)
             if response is not None:
                 return response
             self.last_error = reason
@@ -402,7 +397,7 @@ class OpenAIGuidanceProvider(GuidanceProvider):
 
     # -- interpretation -----------------------------------------------------
 
-    def _interpret(self, raw, request, allowed, latency):
+    def _interpret(self, raw, request, latency):
         """``(GuidanceResponse | None, reason)``. Never raises, never invents."""
         self.last_request_id = _get(raw, "id")
         self.last_returned_model = _get(raw, "model")
@@ -434,35 +429,32 @@ class OpenAIGuidanceProvider(GuidanceProvider):
         if not isinstance(payload, dict):
             return None, FALLBACK_MALFORMED
 
-        selected = payload.get("assignment_ids")
-        if not isinstance(selected, list) or not selected:
+        # The pre-correction body shape is rejected outright rather than
+        # reinterpreted: a list of independently composable per-agent ids is
+        # exactly what produced physically impossible guidance in the pilot.
+        if "assignment_ids" in payload:
             return None, FALLBACK_MALFORMED
-        if len(selected) != len(set(selected)):
-            return None, FALLBACK_MALFORMED           # duplicate id
-        by_agent = {}
-        for assignment_id in selected:
-            parsed = allowed.get(assignment_id)
-            if parsed is None:
-                return None, FALLBACK_MALFORMED       # unknown / invented id
-            agent_id, cell = parsed
-            if agent_id in by_agent:
-                return None, FALLBACK_MALFORMED       # two ids for one agent
-            by_agent[agent_id] = cell
+
+        plan = request.plan_by_id(payload.get("selected_plan_id"))
+        if plan is None:
+            return None, FALLBACK_MALFORMED       # unknown / invented plan id
 
         recipients = tuple(sorted(int(a) for a in request.recipient_agents))
-        if set(by_agent) != set(recipients):
-            return None, FALLBACK_MALFORMED
-
         positions = {int(c.agent_id): tuple(int(x) for x in c.position)
                      for c in request.agent_context}
+        mapping = plan.mapping()
+        if set(mapping) != set(recipients):
+            return None, FALLBACK_MALFORMED
+
         assignments = tuple(
             Assignment(
                 agent_id=agent_id,
                 # The role is decided by code from the real position, never by
-                # the model.
-                role=(ROLE_HOLD_AND_LOAD if positions.get(agent_id) == by_agent[agent_id]
+                # the model. The cell comes from the code-built plan, so the
+                # model contributes exactly one thing: which plan.
+                role=(ROLE_HOLD_AND_LOAD if positions.get(agent_id) == mapping[agent_id]
                       else ROLE_APPROACH_AND_LOAD),
-                loading_cell=by_agent[agent_id],
+                loading_cell=mapping[agent_id],
             )
             for agent_id in recipients
         )
@@ -480,6 +472,7 @@ class OpenAIGuidanceProvider(GuidanceProvider):
             recipients=recipients,
             target_food_id=tuple(int(x) for x in request.food_id),
             helper_coalition=recipients,
+            selected_plan_id=plan.plan_id,
             assignments=assignments,
             confidence=confidence,
         ), ""

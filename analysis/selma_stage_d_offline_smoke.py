@@ -36,7 +36,7 @@ from selma.accounting import (  # noqa: E402
     FALLBACK_READ_ONLY_MISS,
     SelmaAccounting,
 )
-from selma.cache import SqliteGuidanceCache, candidate_assignment_ids  # noqa: E402
+from selma.cache import SqliteGuidanceCache, candidate_plan_ids  # noqa: E402
 from selma.gateway import (  # noqa: E402
     CACHE_READ_ONLY,
     CACHE_READ_WRITE,
@@ -47,7 +47,6 @@ from selma.modes import FROZEN_ACTIVE_VARIANT  # noqa: E402
 from selma.openai_provider import (  # noqa: E402
     MODEL_SNAPSHOT,
     OpenAIGuidanceProvider,
-    parse_assignment_id,
 )
 from selma.provider import build_request  # noqa: E402
 
@@ -69,17 +68,10 @@ class FakeResponses:
 
     def create(self, **kwargs):
         self.calls.append(kwargs)
-        # Answer well: pick the first offered id for each recipient.
+        # Answer well: select the first offered joint plan.
         schema = kwargs["text"]["format"]["schema"]
-        offered = schema["properties"]["assignment_ids"]["items"]["enum"]
-        chosen, seen = [], set()
-        for assignment_id in offered:
-            agent_id, _cell = parse_assignment_id(assignment_id)
-            if agent_id in seen:
-                continue
-            seen.add(agent_id)
-            chosen.append(assignment_id)
-        body = json.dumps({"assignment_ids": chosen, "confidence": 0.9})
+        offered = schema["properties"]["selected_plan_id"]["enum"]
+        body = json.dumps({"selected_plan_id": offered[0], "confidence": 0.9})
         return SimpleNamespace(
             id="resp_fake_{}".format(len(self.calls)),
             model=MODEL_SNAPSHOT,

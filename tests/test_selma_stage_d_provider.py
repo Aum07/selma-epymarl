@@ -23,7 +23,7 @@ from selma.accounting import (  # noqa: E402
     FALLBACK_TIMEOUT,
     FALLBACK_TRANSPORT,
 )
-from selma.cache import candidate_assignment_ids  # noqa: E402
+from selma.cache import candidate_plan_ids  # noqa: E402
 from selma.openai_provider import (  # noqa: E402
     API_KEY_ENV,
     MODEL_SNAPSHOT,
@@ -32,7 +32,6 @@ from selma.openai_provider import (  # noqa: E402
     MissingApiKeyError,
     OpenAIGuidanceProvider,
     build_prompt,
-    parse_assignment_id,
     response_json_schema,
 )
 from selma.provider import (  # noqa: E402
@@ -102,16 +101,11 @@ def api_response(text, *, status="completed", response_id="resp_abc123",
     )
 
 
-def good_payload(request, confidence=0.9):
-    ids = candidate_assignment_ids(request)
-    chosen, seen = [], set()
-    for assignment_id in ids:
-        agent_id, _cell = parse_assignment_id(assignment_id)
-        if agent_id in seen:
-            continue
-        seen.add(agent_id)
-        chosen.append(assignment_id)
-    return json.dumps({"assignment_ids": chosen, "confidence": confidence})
+def good_payload(request, confidence=0.9, plan_index=0):
+    """A compliant body: exactly one offered joint-plan id."""
+    plan_ids = candidate_plan_ids(request)
+    return json.dumps({"selected_plan_id": plan_ids[plan_index],
+                       "confidence": confidence})
 
 
 def provider(*script, **kwargs):
@@ -155,18 +149,18 @@ def test_request_uses_the_responses_api_contract():
 
 def test_structured_output_schema_enumerates_only_offered_ids():
     request = make_request()
-    ids = candidate_assignment_ids(request)
-    schema = response_json_schema(ids)
+    plan_ids = candidate_plan_ids(request)
+    schema = response_json_schema(plan_ids)
     assert schema["additionalProperties"] is False
-    assert schema["properties"]["assignment_ids"]["items"]["enum"] == list(ids)
+    assert schema["properties"]["selected_plan_id"]["enum"] == list(plan_ids)
 
 
 def test_prompt_is_deterministic_and_carries_no_free_coordinates():
     request = make_request()
-    ids = candidate_assignment_ids(request)
-    assert build_prompt(request, ids) == build_prompt(request, ids)
-    payload = json.loads(build_prompt(request, ids))
-    assert payload["candidate_assignment_ids"] == list(ids)
+    assert build_prompt(request) == build_prompt(request)
+    payload = json.loads(build_prompt(request))
+    assert [p["plan_id"] for p in payload["candidate_joint_plans"]] == \
+        list(candidate_plan_ids(request))
 
 
 def test_provider_versions_are_exposed_for_the_cache_key():
@@ -354,44 +348,41 @@ def test_malformed_output_gets_exactly_one_bounded_retry():
     assert p.last_attempts == 2
 
 
-def test_invented_assignment_id_is_rejected():
+def test_invented_plan_id_is_rejected():
     request = make_request()
-    payload = json.dumps({"assignment_ids": ["a0@0,0", "a1@7,7"], "confidence": 1.0})
+    payload = json.dumps({"selected_plan_id": "plan_9999", "confidence": 1.0})
     p = provider(api_response(payload), max_retries=0)
     assert p.query(request) is None
     assert p.last_error == FALLBACK_MALFORMED
 
 
-def test_duplicate_assignment_id_is_rejected():
+def test_a_list_of_composable_assignment_ids_is_rejected():
+    """The pre-correction shape must never be reinterpreted (see joint plans)."""
     request = make_request()
-    ids = candidate_assignment_ids(request)
-    payload = json.dumps({"assignment_ids": [ids[0], ids[0]], "confidence": 1.0})
+    payload = json.dumps({"assignment_ids": ["a0@4,3", "a1@3,4"], "confidence": 1.0})
+    p = provider(api_response(payload), max_retries=0)
+    assert p.query(request) is None
+    assert p.last_error == FALLBACK_MALFORMED
+
+
+def test_a_missing_selected_plan_id_is_rejected():
+    request = make_request()
+    payload = json.dumps({"confidence": 1.0})
     p = provider(api_response(payload), max_retries=0)
     assert p.query(request) is None
 
 
-def test_two_ids_for_one_agent_are_rejected():
+def test_a_non_string_plan_id_is_rejected():
     request = make_request()
-    ids = [i for i in candidate_assignment_ids(request) if i.startswith("a0@")]
-    assert len(ids) >= 2
-    payload = json.dumps({"assignment_ids": ids, "confidence": 1.0})
-    p = provider(api_response(payload), max_retries=0)
-    assert p.query(request) is None
-
-
-def test_missing_recipient_selection_is_rejected():
-    request = make_request()
-    ids = candidate_assignment_ids(request)
-    payload = json.dumps({"assignment_ids": [ids[0]], "confidence": 1.0})
+    payload = json.dumps({"selected_plan_id": 0, "confidence": 1.0})
     p = provider(api_response(payload), max_retries=0)
     assert p.query(request) is None
 
 
 def test_non_numeric_confidence_is_rejected():
     request = make_request()
-    ids = candidate_assignment_ids(request)
-    chosen = json.loads(good_payload(request))["assignment_ids"]
-    payload = json.dumps({"assignment_ids": chosen, "confidence": "very"})
+    plan_ids = candidate_plan_ids(request)
+    payload = json.dumps({"selected_plan_id": plan_ids[0], "confidence": "very"})
     p = provider(api_response(payload), max_retries=0)
     assert p.query(request) is None
 
@@ -406,23 +397,21 @@ def test_no_heuristic_fallback_is_ever_substituted():
         assert p.query(request) is None
 
 
+
 # ==========================================================================
-# 6. runtime-prompt audit (Stage D live-pilot, 2026-08-17)
+# 6. runtime-prompt audit
 # ==========================================================================
 #
-# The pre-pilot audit of the *actual runtime prompt* (not merely its version
-# name) found two defects that made the offered choice ungrounded:
+# The v1 audit found two defects that made the offered choice ungrounded: the
+# candidate ids were opaque strings (``a1@3,4`` was never explained), and the
+# LBF collection rule was never stated. Prompt v2 fixed both.
 #
-#   1. the candidate ids were opaque strings. ``a1@3,4`` was never explained
-#      anywhere in the prompt, so the model was asked to choose between tokens
-#      whose meaning -- which agent, which cell -- it had to guess;
-#   2. the LBF collection rule was never stated, so the prompt never said why a
-#      helper is needed or what makes an assignment good.
-#
-# Both are prompt-only corrections: the response schema, the validator and the
-# key composition are untouched, and no new authority is given to the model.
-# ``PROMPT_VERSION`` is bumped, which changes every cache digest, because
-# ``prompt_version`` is part of the canonical key.
+# The v3 correction goes further, because v2's *contract* was still wrong: it
+# offered independently composable per-agent ids, and the live pilot duly
+# returned two agents for one cell. v3 offers complete, code-validated joint
+# plans and the model returns exactly one ``selected_plan_id``. The
+# joint-validity rules themselves are pinned by
+# ``tests/test_selma_stage_d_joint_plans.py``; what follows is the prompt.
 
 
 def test_prompt_states_the_lbf_collection_rule():
@@ -436,64 +425,81 @@ def test_prompt_states_the_lbf_collection_rule():
     assert "load" in text
 
 
-def test_prompt_grounds_every_candidate_id_to_its_agent_and_cell():
-    """Every offered id is spelled out as (agent, loading cell) in the prompt."""
+def test_prompt_states_that_two_agents_cannot_share_a_cell():
+    from selma.openai_provider import SYSTEM_PROMPT
+
+    assert "same cell" in SYSTEM_PROMPT.lower()
+
+
+def test_prompt_asks_for_exactly_one_plan_and_forbids_composing_them():
+    from selma.openai_provider import SYSTEM_PROMPT
+
+    text = SYSTEM_PROMPT.lower()
+    assert "exactly one selected_plan_id" in text
+    assert "combine" in text
+    assert "assignment_ids" not in text, "the superseded contract must be gone"
+
+
+def test_prompt_grounds_every_plan_id_to_its_complete_mapping():
+    """A bare ``plan_3`` would put the model back to guessing what it selects."""
     request = make_request()
-    ids = candidate_assignment_ids(request)
-    payload = json.loads(build_prompt(request, ids))
+    payload = json.loads(build_prompt(request))
+    described = payload["candidate_joint_plans"]
 
-    candidates = payload["candidates"]
-    assert [c["assignment_id"] for c in candidates] == list(ids)
-    for entry in candidates:
-        agent_id, cell = parse_assignment_id(entry["assignment_id"])
-        assert entry["agent_id"] == agent_id
-        assert tuple(entry["loading_cell"]) == cell
+    assert [e["plan_id"] for e in described] == list(candidate_plan_ids(request))
+    for entry, plan in zip(described, request.candidate_joint_plans):
+        assert entry["assignments"] == [
+            {"agent_id": int(a.agent_id),
+             "loading_cell": [int(a.loading_cell[0]), int(a.loading_cell[1])]}
+            for a in plan.assignments]
+        assert entry["description"]
 
 
-def test_prompt_offers_genuinely_distinct_alternatives_per_agent():
-    """A recipient with several offered cells must see all of them."""
+def test_prompt_offers_genuinely_distinct_alternatives():
     request = make_request()
-    ids = candidate_assignment_ids(request)
-    payload = json.loads(build_prompt(request, ids))
-
-    per_agent = {}
-    for entry in payload["candidates"]:
-        per_agent.setdefault(entry["agent_id"], set()).add(tuple(entry["loading_cell"]))
-    assert per_agent, "no candidates were described"
-    assert any(len(cells) > 1 for cells in per_agent.values())
+    payload = json.loads(build_prompt(request))
+    mappings = [json.dumps(e["assignments"], sort_keys=True)
+                for e in payload["candidate_joint_plans"]]
+    assert len(mappings) >= 2
+    assert len(set(mappings)) == len(mappings)
 
 
-def test_prompt_states_the_id_format_and_how_many_ids_to_return():
+def test_every_offered_plan_uses_distinct_cells():
+    """The prompt can only describe physically realisable options."""
     request = make_request()
-    ids = candidate_assignment_ids(request)
-    payload = json.loads(build_prompt(request, ids))
+    for entry in json.loads(build_prompt(request))["candidate_joint_plans"]:
+        cells = [tuple(a["loading_cell"]) for a in entry["assignments"]]
+        agents = [a["agent_id"] for a in entry["assignments"]]
+        assert len(set(cells)) == len(cells)
+        assert len(set(agents)) == len(agents)
 
+
+def test_prompt_states_how_many_plans_are_offered():
+    request = make_request()
+    payload = json.loads(build_prompt(request))
     instructions = payload["instructions"]
-    assert "a<agent_id>@<row>,<col>" in instructions
+    assert "selected_plan_id" in instructions
+    assert str(len(request.candidate_joint_plans)) in instructions
     assert str(len(request.recipient_agents)) in instructions
 
 
 def test_prompt_carries_no_episode_identity_or_run_metadata():
     """Nothing episode-scoped or run-scoped may reach the model."""
     request = make_request()
-    text = build_prompt(request, candidate_assignment_ids(request))
+    text = build_prompt(request)
     payload = json.loads(text)
 
     for leaked in ("event_id", "food_id", "episode_id", "seed", "t_env",
                    "episode_step", "created_at", "timestamp", "run_identity"):
         assert leaked not in payload
-    # the detector's event_id embeds the episode number; it must not appear
-    # anywhere in the serialised prompt, at any nesting depth.
     assert request.event_id not in text
     assert "ep7" not in text
 
 
 def test_prompt_is_still_deterministic_and_canonical():
     request = make_request()
-    ids = candidate_assignment_ids(request)
-    first = build_prompt(request, ids)
-    assert first == build_prompt(request, ids)
-    # canonical: sorted keys, no insignificant whitespace
+    first = build_prompt(request)
+    assert first == build_prompt(request)
     assert first == json.dumps(json.loads(first), sort_keys=True,
                                separators=(",", ":"))
 
@@ -503,26 +509,29 @@ def test_prompt_version_is_bumped_and_invalidates_old_cache_entries():
     from selma.cache import build_cache_key, canonical_json, key_digest
     from selma.openai_provider import PROMPT_VERSION as CURRENT
 
-    assert CURRENT == "selma_guidance_prompt_v2"
+    assert CURRENT == "selma_guidance_prompt_v3"
 
     request = make_request()
     context = dict(condition="c", grid_shape=(8, 8), provider="openai",
                    model_snapshot=MODEL_SNAPSHOT, reasoning_effort="none",
                    response_schema_version=RESPONSE_SCHEMA_VERSION)
-    old = key_digest(canonical_json(build_cache_key(
-        request, prompt_version="selma_guidance_prompt_v1", **context)))
-    new = key_digest(canonical_json(build_cache_key(
-        request, prompt_version=CURRENT, **context)))
-    assert old != new
+    digests = {
+        version: key_digest(canonical_json(build_cache_key(
+            request, prompt_version=version, **context)))
+        for version in ("selma_guidance_prompt_v1", "selma_guidance_prompt_v2",
+                        CURRENT)
+    }
+    assert len(set(digests.values())) == 3, digests
 
 
-def test_response_schema_is_unchanged_by_the_prompt_correction():
-    """The model gains no new authority: same schema, same version."""
+def test_response_schema_is_a_single_plan_id_with_no_array():
+    """A list of composable parts must be inexpressible, not merely discouraged."""
     request = make_request()
-    ids = candidate_assignment_ids(request)
-    schema = response_json_schema(ids)
+    plan_ids = candidate_plan_ids(request)
+    schema = response_json_schema(plan_ids)
 
-    assert RESPONSE_SCHEMA_VERSION == "selma_guidance_response_schema_v1"
-    assert set(schema["properties"]) == {"assignment_ids", "confidence"}
+    assert RESPONSE_SCHEMA_VERSION == "selma_guidance_response_schema_v2"
+    assert set(schema["properties"]) == {"selected_plan_id", "confidence"}
     assert schema["additionalProperties"] is False
-    assert schema["properties"]["assignment_ids"]["items"]["enum"] == list(ids)
+    assert schema["properties"]["selected_plan_id"]["enum"] == list(plan_ids)
+    assert "array" not in json.dumps(schema)

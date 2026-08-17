@@ -22,7 +22,17 @@ identical :class:`GuidanceRequest` and must return the identical
 
 from typing import NamedTuple, Optional, Tuple
 
-SCHEMA_VERSION = "guidance_schema_v1"
+from selma.joint_plans import enumerate_joint_plans, plan_violations
+
+#: Response schema. Bumped to v2 by the joint-plan correction: a response now
+#: carries ``selected_plan_id`` and no longer a list of independently composable
+#: per-agent assignments.
+SCHEMA_VERSION = "guidance_schema_v2"
+
+#: Request representation. Bumped to v2 alongside it: a request now carries the
+#: enumerated ``candidate_joint_plans`` and the ``grid_shape`` needed to check
+#: them. This is what the cache key records as ``request_schema_version``.
+REQUEST_VERSION = "selma_guidance_request_v2"
 
 # Roles the code is willing to offer. The provider may only choose from these.
 ROLE_HOLD_AND_LOAD = "hold_and_load"
@@ -77,7 +87,12 @@ class AgentContext(NamedTuple):
 
 
 class GuidanceRequest(NamedTuple):
-    """Code-built, provider-neutral context for one struggle event."""
+    """Code-built, provider-neutral context for one struggle event.
+
+    ``candidate_joint_plans`` is the complete, deterministically enumerated set
+    of *physically valid* mappings of the required recipients to loading cells.
+    A provider selects one of them by id; it never composes a plan out of parts.
+    """
 
     schema_version: str
     event_id: str
@@ -85,11 +100,22 @@ class GuidanceRequest(NamedTuple):
     food_id: Tuple[int, int, int]
     food_position: Tuple[int, int]
     food_level: int
+    grid_shape: Tuple[int, int]
     trigger_agent_ids: Tuple[int, ...]
     recipient_agents: Tuple[int, ...]
     level_deficit: int
     required_extra_level: int
     agent_context: Tuple[AgentContext, ...]
+    candidate_joint_plans: Tuple[object, ...] = ()
+
+    def plan_by_id(self, plan_id):
+        """The offered plan with this id, or ``None``. Never raises."""
+        if not isinstance(plan_id, str) or not plan_id:
+            return None
+        for plan in self.candidate_joint_plans:
+            if plan.plan_id == plan_id:
+                return plan
+        return None
 
 
 class Assignment(NamedTuple):
@@ -99,13 +125,21 @@ class Assignment(NamedTuple):
 
 
 class GuidanceResponse(NamedTuple):
-    """What a provider returns. Selection among offered options only."""
+    """What a provider returns: **one** offered joint plan, selected by id.
+
+    ``assignments`` is derived by code from the selected plan (the role from the
+    agent's real position), never supplied by the model. It is carried here so
+    the rest of Stage C is unchanged, and the validator checks that it still
+    matches the plan the id names -- neither the id nor the mapping is trusted
+    on its own.
+    """
 
     schema_version: str
     event_id: str
     recipients: Tuple[int, ...]
     target_food_id: Tuple[int, int, int]
     helper_coalition: Tuple[int, ...]
+    selected_plan_id: str
     assignments: Tuple[Assignment, ...]
     confidence: float
 
@@ -116,7 +150,7 @@ class ValidationResult(NamedTuple):
     response: object     # the GuidanceResponse when valid, else None
 
 
-def build_request(event_row, agent_positions):
+def build_request(event_row, agent_positions, grid_shape):
     """Build a :class:`GuidanceRequest` from one detector ``coalesced_event`` row.
 
     Every field comes from the detector, except ``agent_positions``, which the
@@ -124,6 +158,11 @@ def build_request(event_row, agent_positions):
     (the state ``s_{t+1}`` in which the recipients will act on the advice), read
     from the GymMA/Stage A accessor. The frozen detector row does not carry
     them and its schema must not change.
+
+    ``grid_shape`` is required, not defaulted: physical validity of a loading
+    cell cannot be decided without the grid bounds, and a silent default would
+    reintroduce exactly the class of defect the ``(-1, -1)`` position fallback
+    already caused once.
 
     Raises :class:`MissingAgentPositionError` if any recipient has no position.
     Nothing is invented here and there is no positional fallback.
@@ -161,26 +200,41 @@ def build_request(event_row, agent_positions):
                 candidate_loading_cells=cells,
             )
         )
+    food_position = tuple(int(x) for x in event_row["food_position"])
+    grid = (int(grid_shape[0]), int(grid_shape[1]))
     return GuidanceRequest(
-        schema_version=SCHEMA_VERSION,
+        schema_version=REQUEST_VERSION,
         event_id=str(event_row["event_id"]),
         event_type="coordination_stall",
         food_id=tuple(int(x) for x in event_row["food_id"]),
-        food_position=tuple(int(x) for x in event_row["food_position"]),
+        food_position=food_position,
         food_level=int(event_row["food_level"]),
+        grid_shape=grid,
         trigger_agent_ids=tuple(int(a) for a in event_row["trigger_agent_ids"]),
         recipient_agents=recipients,
         level_deficit=int(event_row["level_deficit"]),
         required_extra_level=int(event_row["required_extra_level"]),
         agent_context=tuple(ctx),
+        # The complete answer set, built by code. A provider never widens it.
+        candidate_joint_plans=enumerate_joint_plans(
+            recipients, cells, food_position, grid),
     )
 
 
 def validate(request, response):
-    """Deterministic, side-effect-free validation (contract 3.3).
+    """Deterministic, side-effect-free validation (contract 3.3, joint-plan v2).
 
-    Checks run in the contract's order. The first failure short-circuits with a
-    stable reason code; there is no partial application.
+    Checks run in a fixed order. The first failure short-circuits with a stable
+    reason code; there is no partial application.
+
+    The joint-plan correction changed step 5 fundamentally. The audited version
+    checked each assignment *independently* -- "is this cell one of the offered
+    cells?" -- which is satisfiable by two agents sharing one cell, and the live
+    pilot duly produced exactly that. Validity is now a property of the whole
+    mapping: the selected id must name an offered plan, the response's mapping
+    must be that plan, and every joint constraint is re-derived from the raw
+    request by :func:`~selma.joint_plans.plan_violations` rather than assumed
+    from the fact that the plan came out of the enumerator.
     """
     if response is None:
         return ValidationResult(False, "no_response", None)
@@ -191,7 +245,7 @@ def validate(request, response):
     if response.schema_version != SCHEMA_VERSION:
         return ValidationResult(False, "schema_version_mismatch", None)
     for field in ("event_id", "recipients", "target_food_id", "helper_coalition",
-                  "assignments", "confidence"):
+                  "selected_plan_id", "assignments", "confidence"):
         if getattr(response, field, None) is None:
             return ValidationResult(False, "missing_field", None)
 
@@ -199,43 +253,71 @@ def validate(request, response):
     if response.event_id != request.event_id:
         return ValidationResult(False, "event_id_mismatch", None)
 
-    # 3. recipients subset, non-empty
+    # 3. recipients: exactly the required set, non-empty. A joint plan covers
+    #    every required recipient, so a subset is no longer sufficient.
     if not response.recipients:
         return ValidationResult(False, "empty_recipients", None)
-    if not set(response.recipients).issubset(set(request.recipient_agents)):
-        return ValidationResult(False, "recipients_not_subset", None)
+    if set(response.recipients) != set(request.recipient_agents):
+        return ValidationResult(False, "recipients_not_exact", None)
 
     # 4. target food
     if tuple(response.target_food_id) != tuple(request.food_id):
         return ValidationResult(False, "target_food_mismatch", None)
 
-    # 5. assignments: one per recipient, no duplicates, agents are recipients
-    assigned = [a.agent_id for a in response.assignments]
-    if len(assigned) != len(set(assigned)):
-        return ValidationResult(False, "duplicate_agent_assignment", None)
-    if set(assigned) != set(response.recipients):
-        return ValidationResult(False, "assignment_recipient_mismatch", None)
+    # 5. the selected plan must be one the code offered
+    plan = request.plan_by_id(response.selected_plan_id)
+    if plan is None:
+        return ValidationResult(False, "unknown_plan_id", None)
+
+    # 6. joint physical validity of the mapping actually carried, re-derived
+    #    from the request. This is what a per-assignment check cannot express.
+    offered_cells = sorted({
+        tuple(int(x) for x in cell)
+        for ctx in request.agent_context
+        for cell in ctx.candidate_loading_cells
+    })
+    problems = plan_violations(
+        response.assignments,
+        recipient_agents=request.recipient_agents,
+        candidate_cells=offered_cells,
+        food_position=request.food_position,
+        grid_shape=request.grid_shape,
+    )
+    if problems:
+        return ValidationResult(False, problems[0], None)
+
+    # 7. the mapping must be the plan the id names -- id and content must agree
+    claimed = {int(a.agent_id): tuple(int(x) for x in a.loading_cell)
+               for a in response.assignments}
+    if claimed != plan.mapping():
+        return ValidationResult(False, "plan_assignment_mismatch", None)
+
+    # 8. defence in depth: the code-built plan itself is re-checked, so a future
+    #    enumerator that widened the answer set could not slip past here.
+    if plan_violations(plan.assignments,
+                       recipient_agents=request.recipient_agents,
+                       candidate_cells=offered_cells,
+                       food_position=request.food_position,
+                       grid_shape=request.grid_shape):
+        return ValidationResult(False, "offered_plan_invalid", None)
 
     by_agent = {c.agent_id: c for c in request.agent_context}
     for a in response.assignments:
         ctx = by_agent.get(a.agent_id)
         if ctx is None:
             return ValidationResult(False, "agent_not_in_context", None)
-        # 6. loading cell must be one the code offered
-        if tuple(a.loading_cell) not in set(ctx.candidate_loading_cells):
-            return ValidationResult(False, "loading_cell_not_offered", None)
-        # 7. role must be one the code offered
+        # 9. role must be one the code offered
         if a.role not in set(ctx.allowed_roles):
             return ValidationResult(False, "role_not_allowed", None)
 
-    # 8. coalition feasibility, re-checked against raw state (never trusted)
+    # 10. coalition feasibility, re-checked against raw state (never trusted)
     if not set(response.helper_coalition).issubset(set(request.recipient_agents)):
         return ValidationResult(False, "helper_not_recipient", None)
     level_sum = sum(by_agent[a].level for a in response.recipients if a in by_agent)
     if level_sum < request.food_level:
         return ValidationResult(False, "coalition_infeasible", None)
 
-    # 9. confidence range (advisory only; never scales beta or the potential)
+    # 11. confidence range (advisory only; never scales beta or the potential)
     try:
         conf = float(response.confidence)
     except (TypeError, ValueError):
@@ -265,10 +347,17 @@ class DeterministicMockProvider(GuidanceProvider):
     """Stage C mock. Pure function of the request; no network, no credentials.
 
     The policy is intentionally simple and fully determined by the request:
-    assign every recipient to the candidate loading cell that is smallest in
-    lexicographic order among those offered, with the role decided by whether
-    the agent already stands on its assigned cell. Ties are broken by sorting,
-    so the same request always yields byte-identical output.
+    **select the canonically first offered joint plan**, ``plan_0``, with each
+    role decided by whether the agent already stands on its assigned cell.
+
+    This preserves the mock's intended semantics under the joint-plan contract.
+    The audited mock assigned agent *i* (in sorted order) to offered cell
+    ``i % len(offered)``, i.e. the lexicographically first cells in order --
+    which is exactly the mapping ``plan_0`` denotes whenever a plan exists. The
+    one behaviour that is deliberately *not* preserved is its modulo wrap: with
+    fewer offered cells than recipients the old rule silently reused a cell and
+    produced the same physically impossible guidance the live provider did.
+    There is now no plan at all in that case, and the mock returns ``None``.
     """
 
     provider_id = "deterministic_mock"
@@ -282,21 +371,30 @@ class DeterministicMockProvider(GuidanceProvider):
     def query(self, request):
         self.call_count += 1
         self.last_usage = USAGE_NOT_APPLICABLE
-        assignments = []
-        for i, ctx in enumerate(sorted(request.agent_context)):
-            offered = sorted(set(ctx.candidate_loading_cells))
-            if not offered:
-                return None  # nothing admissible to assign -> validation will reject
-            cell = offered[i % len(offered)]
-            role = ROLE_HOLD_AND_LOAD if tuple(ctx.position) == tuple(cell) else ROLE_APPROACH_AND_LOAD
-            assignments.append(Assignment(agent_id=ctx.agent_id, role=role, loading_cell=tuple(cell)))
+        plans = request.candidate_joint_plans
+        if not plans:
+            return None  # no physically valid plan -> no guidance, F_t = 0
+        plan = plans[0]
+        positions = {int(c.agent_id): tuple(int(x) for x in c.position)
+                     for c in request.agent_context}
+        assignments = tuple(
+            Assignment(
+                agent_id=int(a.agent_id),
+                role=(ROLE_HOLD_AND_LOAD
+                      if positions.get(int(a.agent_id)) == tuple(a.loading_cell)
+                      else ROLE_APPROACH_AND_LOAD),
+                loading_cell=tuple(int(x) for x in a.loading_cell),
+            )
+            for a in plan.assignments
+        )
         return GuidanceResponse(
             schema_version=SCHEMA_VERSION,
             event_id=request.event_id,
             recipients=tuple(sorted(request.recipient_agents)),
             target_food_id=tuple(request.food_id),
             helper_coalition=tuple(sorted(request.recipient_agents)),
-            assignments=tuple(assignments),
+            selected_plan_id=plan.plan_id,
+            assignments=assignments,
             confidence=1.0,
         )
 
