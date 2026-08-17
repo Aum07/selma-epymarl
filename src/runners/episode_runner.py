@@ -536,6 +536,7 @@ class EpisodeRunner:
                         episode_id=selma_episode_id,
                         condition_checked=1,
                         greedy_eval=0,
+                        step_loads=_step_loads,
                     )
                 if selma_decision_writer is not None:
                     selma_decision_writer.write_rows(

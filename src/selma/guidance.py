@@ -841,12 +841,17 @@ class GuidanceCsvWriter(_CsvLogWriter):
         "query_returned_model",
         "detector_events", "decisions", "zero_plan_decisions",
         "singleton_decisions", "multiple_plan_decisions", "greedy_eval",
+        # Stage E: per-transition LBF load outcomes, so "was a coordination
+        # stall resolved within N transitions" is answerable from this log
+        # alone. Read from the Stage A aggregate the runner already computes;
+        # nothing here observes or changes the environment.
+        "step_successful_loads", "step_cooperative_loads", "step_failed_loads",
         "provider_calls", "total_queries", "activations", "replacements",
         "expiries", "rejected", "terminal_suppressed_events",
     )
 
     def write_row(self, record, controller, t_env, condition, seed, episode_id,
-                  condition_checked=1, greedy_eval=0):
+                  condition_checked=1, greedy_eval=0, step_loads=None):
         usage = record.usage
         row = {
             "t_env": t_env,
@@ -906,6 +911,12 @@ class GuidanceCsvWriter(_CsvLogWriter):
             "multiple_plan_decisions": sum(
                 1 for d in record.decisions if d.decision == DECISION_MULTIPLE),
             "greedy_eval": int(bool(greedy_eval)),
+            "step_successful_loads": int((step_loads or {}).get(
+                "successful_load_events", 0)),
+            "step_cooperative_loads": int((step_loads or {}).get(
+                "necessary_cooperative_load_events", 0)),
+            "step_failed_loads": int((step_loads or {}).get(
+                "failed_load_events", 0)),
             "provider_calls": controller.provider_call_count,
             "total_queries": controller.query_count,
             "activations": controller.activation_count,
