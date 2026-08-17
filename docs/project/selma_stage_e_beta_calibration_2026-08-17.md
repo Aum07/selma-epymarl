@@ -208,6 +208,47 @@ unexpected greedy-evaluation provider call, or a global cost/attempt overrun.
 > a preregistered rule produced an inconvenient outcome, the rule stands and the
 > outcome is reported as-is.
 
+> ## ⚠ FACTUAL CORRECTIONS (2026-08-17, commit after `c7a318e`)
+>
+> Two statements in the originally committed Part 2 were wrong. They are
+> corrected in place below. **No observed number, no measurement and no
+> conclusion changed** — the pilot outcome remains **UNRESOLVED**, and the
+> original evidence and commit `c7a318e` stand as the historical record.
+>
+> **1. "Monotonic" was wrong.** The original text said detector events and the
+> unguided share rose *monotonically with `beta`*. They did not, across all four
+> values. Observed decisions were **1 294 / 1 660 / 1 996 / 893** for
+> `beta` = 0.00 / 0.05 / 0.10 / 0.25.
+>
+> > **Correct interpretation:** detector-event frequency varied strongly with
+> > `beta`. It increased from `beta = 0` through `beta = 0.10`, while
+> > `beta = 0.25` produced substantially fewer events. The fixed call cap created
+> > materially unequal guidance coverage.
+>
+> The monotone trend holds only over the first three values, and is stated that
+> way now. Nothing about the confound conclusion depends on monotonicity — it
+> depends on coverage being *unequal*, which it was (81.2 % / 63.2 % / 53.5 % /
+> 100 %).
+>
+> **2. "19 % of the way through the run" conflated two different quantities.**
+> The 18.8 % figure is the fraction of `beta=0.00`'s *eligible decisions* that
+> subsequently received no guidance. It is **not** a position in training.
+> Measured from the decision log, the caps were exhausted **late**, not early:
+>
+> | Condition | 1000th attempt at `t_env` | First `budget_exhausted` | Fraction of training elapsed | Steps remaining |
+> |---|---|---|---|---|
+> | `beta=0.00` | 461 456 | 461 636 | **92.3 %** | ~38 400 |
+> | `beta=0.05` | 441 088 | 441 106 | **88.2 %** | ~58 900 |
+> | `beta=0.10` | 378 557 | 378 726 | **75.7 %** | ~121 300 |
+> | `beta=0.25` | never | never | — | — |
+>
+> These are measured values and refine the approximate "~55k remaining, ~89 %"
+> characterisation: that figure matches `beta=0.05` closely, while `beta=0.00`
+> exhausted with ~38k steps remaining (92.3 % through).
+>
+> Both corrections are pinned by regression tests in
+> `tests/test_selma_stage_e_recalibration_design.py`.
+
 ## 2.1 Headline
 
 **`beta` is UNRESOLVED. No value is frozen, and this pilot cannot freeze one.**
@@ -215,10 +256,12 @@ unexpected greedy-evaluation provider call, or a global cost/attempt overrun.
 Two independent reasons, both preregistered:
 
 1. **Cap exhaustion made the conditions non-comparable (§1.5, exclusion 9).**
-   Three of four conditions consumed their entire 1 000-attempt budget, and the
-   fraction of guidance decisions left unguided rose *monotonically with `beta`*
-   — 18.8 % → 36.8 % → 46.5 %. Guidance coverage is therefore confounded with
-   the variable under test.
+   Three of four conditions consumed their entire 1 000-attempt budget. Across
+   `beta` = 0.00 / 0.05 / 0.10 the share of guidance decisions left unguided rose
+   18.8 % → 36.8 % → 46.5 %; `beta = 0.25` was fully covered (0 %). Guidance
+   coverage therefore varied strongly with `beta` and is confounded with the
+   variable under test. **The relationship is not monotonic across all four
+   values** — see the correction notice at the top of Part 2.
 2. **The only positive `beta` with full guidance coverage (`0.25`) was not
    directionally competitive with `beta = 0` (rule 5).**
 
@@ -271,11 +314,12 @@ joint plans, as in Stage D).
 Tokens: 877 000 input / 25 000 output per capped condition; 748 081 / 21 325 for
 `beta=0.25`. Cached input **0** throughout. Median latency 0.80–0.86 s.
 
-**This table is the pilot's main finding.** Higher `beta` produced monotonically
-more coordination stalls (1 294 → 1 660 → 1 996) against a fixed 1 000-call
-budget, so guidance coverage fell as `beta` rose. `beta=0.25` breaks the pattern
-in the other direction: its policy diverged enough to generate only 893 stalls,
-so it alone was fully covered.
+**This table is the pilot's main finding.** Detector-event frequency varied
+strongly with `beta`. It increased from `beta = 0` through `beta = 0.10`
+(1 294 → 1 660 → 1 996) while `beta = 0.25` produced substantially fewer events
+(893). Against a fixed 1 000-call budget this created materially unequal
+guidance coverage: 81.2 % / 63.2 % / 53.5 % / 100 %. **There is no monotonic
+relationship across all four `beta` values**, and none is claimed.
 
 ## 2.5 C. Shaping magnitude — all within the preregistered limits
 
@@ -380,8 +424,9 @@ from this comparison.** Required changes before re-running:
   configuration were fixed before execution; performance was first examined only
   after the fourth condition exited. No condition was stopped early, re-run or
   added.
-* **No cap was raised mid-pilot**, including when the first condition exhausted
-  its budget at 19 % of the way through the run.
+* **No cap was raised mid-pilot**, including when conditions exhausted their
+  budgets late in training (`beta=0.00` at `t_env` 461 636, ~92 % through;
+  `beta=0.05` at 441 106, ~88 %; `beta=0.10` at 378 726, ~76 %).
 * **This is not a performance result and not a significance claim.**
 * **`beta` was not frozen.** The preregistered rule returned UNRESOLVED.
 * The frozen Stage D contracts — detector, joint plans, provider, prompt v3,
