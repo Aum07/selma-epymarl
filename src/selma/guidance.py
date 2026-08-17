@@ -148,6 +148,25 @@ def phi(guidance, agent_positions, food_positions, grid_shape):
     return sum(comps.values()) / float(len(comps))
 
 
+def _skip_decision(event_id, decision, plan_count, recipients, outcome):
+    """A decision that never reached a cache or a provider.
+
+    Every provider-shaped field is explicitly empty or zero rather than absent,
+    so the log can be read without knowing which branch produced a row, and a
+    skip can never be mistaken for a cache lookup that happened to miss.
+    """
+    return DecisionRecord(
+        event_id=event_id, decision=decision,
+        candidate_plan_count=int(plan_count), recipient_count=int(recipients),
+        key_digest="", cache_result="", provider_considered=0,
+        live_attempts=0, retries=0, outcome=str(outcome),
+        selected_plan_id="", validator_valid=0, validator_reason="",
+        physically_valid=0, activated=0,
+        tokens_input=None, tokens_cached_input=None, tokens_output=None,
+        tokens_reasoning=None, returned_model="", latency_s=None, request_id="",
+    )
+
+
 def pbrs_term_unscaled(gamma, phi_before, phi_after_effective):
     """``gamma * phi_after_effective - phi_before``. Beta-free, never clipped."""
     return float(gamma) * float(phi_after_effective) - float(phi_before)
@@ -160,6 +179,55 @@ def shaping_term(beta, gamma, phi_before, phi_after_effective):
     never in both.
     """
     return float(beta) * pbrs_term_unscaled(gamma, phi_before, phi_after_effective)
+
+
+#: What the controller decided for one detector event. These are the four
+#: mutually exclusive outcomes of the frozen joint-plan policy plus the
+#: documented missing-position rejection; every eligible event lands in exactly
+#: one of them.
+DECISION_ZERO_PLAN = "zero_plan"
+DECISION_SINGLETON = "singleton"
+DECISION_MULTIPLE = "multiple"
+DECISION_MISSING_POSITION = "missing_position"
+
+
+class DecisionRecord(NamedTuple):
+    """One detector event's full journey, for the measurement log.
+
+    One row per *event*, not per transition: the semantic cache-key digest, the
+    candidate-plan count and the provider outcome are all properties of an
+    event, and a transition may carry more than one. Aggregating them into the
+    per-transition PBRS log would make distinct-key counting impossible.
+
+    ``key_digest`` is the scheme-B semantic key. It is present for every
+    multiple-plan decision whose cache is enabled -- **including** one that was
+    then refused a live call because the budget was exhausted -- so the number
+    of distinct questions asked can be computed independently of whether the
+    cache was allowed to fill.
+    """
+
+    event_id: str
+    decision: str
+    candidate_plan_count: int
+    recipient_count: int
+    key_digest: str
+    cache_result: str          # "hit" | "miss" | "off" | "" (no lookup made)
+    provider_considered: int
+    live_attempts: int
+    retries: int
+    outcome: str               # "activated" | a stable fallback/skip reason
+    selected_plan_id: str
+    validator_valid: int
+    validator_reason: str
+    physically_valid: int
+    activated: int
+    tokens_input: object
+    tokens_cached_input: object
+    tokens_output: object
+    tokens_reasoning: object
+    returned_model: str
+    latency_s: object
+    request_id: str
 
 
 class TransitionRecord(NamedTuple):
@@ -194,6 +262,10 @@ class TransitionRecord(NamedTuple):
     usage: object
     stored_terminated: int
     terminal_cause: str
+    #: Per-event decisions taken on this transition, in detector order.
+    decisions: Tuple[DecisionRecord, ...] = ()
+    #: Coalesced detector events seen on this transition, before eligibility.
+    detector_events: int = 0
 
 
 class GuidanceController:
@@ -327,7 +399,9 @@ class GuidanceController:
         activated = 0
         provider_valid = 0
         fallback = ""
+        decisions = []
         for row in self._eligible(event_rows):
+            event_id = str(row.get("event_id", ""))
             try:
                 request = build_request(row, agent_positions=agent_positions,
                                         grid_shape=self.grid_shape)
@@ -340,10 +414,13 @@ class GuidanceController:
                 self.fallback_reasons[fallback] = self.fallback_reasons.get(fallback, 0) + 1
                 if self.accounting is not None:
                     self.accounting.missing_position_count += 1
+                decisions.append(_skip_decision(
+                    event_id, DECISION_MISSING_POSITION, 0, 0, fallback))
                 continue
 
             # -- joint-plan policy, applied before any cache or provider -----
             plan_count = len(request.candidate_joint_plans)
+            recipients = len(request.recipient_agents)
             if plan_count < 2:
                 skip = (SKIP_NO_VALID_JOINT_PLAN if plan_count == 0
                         else SKIP_SINGLETON_NO_CHOICE)
@@ -354,6 +431,10 @@ class GuidanceController:
                         self.accounting.zero_plan_skip_count += 1
                     else:
                         self.accounting.singleton_skip_count += 1
+                decisions.append(_skip_decision(
+                    event_id,
+                    DECISION_ZERO_PLAN if plan_count == 0 else DECISION_SINGLETON,
+                    plan_count, recipients, skip))
                 continue
             if self.accounting is not None:
                 self.accounting.multiple_plan_decision_count += 1
@@ -375,6 +456,9 @@ class GuidanceController:
                 # validator only ever sees "no_response".
                 fallback = getattr(self.provider, "last_fallback_reason", "") or verdict.reason
                 self.fallback_reasons[fallback] = self.fallback_reasons.get(fallback, 0) + 1
+                decisions.append(self._decision(
+                    event_id, plan_count, recipients, verdict, response,
+                    outcome=fallback, activated=0))
                 continue
 
             provider_valid = 1
@@ -402,7 +486,56 @@ class GuidanceController:
             activated += 1
             if self.accounting is not None:
                 self.accounting.guidance_activation_count += 1
-        return queried, activated, provider_valid, fallback
+            decisions.append(self._decision(
+                event_id, plan_count, recipients, verdict, response,
+                outcome="activated", activated=1))
+        return queried, activated, provider_valid, fallback, tuple(decisions)
+
+    def _decision(self, event_id, plan_count, recipients, verdict, response,
+                  *, outcome, activated):
+        """Build the durable record for one multiple-plan decision.
+
+        Reads the gateway's instrumentation when present. Never touches a
+        prompt, a raw response body or a header: only counts, ids, digests and
+        the deterministic verdict.
+        """
+        from selma.joint_plans import plan_violations
+
+        provider = self.provider
+        usage = getattr(provider, "last_usage", None)
+        physically_valid = 0
+        if verdict.valid and verdict.response is not None:
+            physically_valid = 1
+        elif response is not None:
+            # A response arrived and was rejected; record whether the rejection
+            # was a physical-validity one rather than, say, a stale event id.
+            physically_valid = 0
+        return DecisionRecord(
+            event_id=event_id,
+            decision=DECISION_MULTIPLE,
+            candidate_plan_count=int(plan_count),
+            recipient_count=int(recipients),
+            key_digest=str(getattr(provider, "last_key_digest", "") or ""),
+            cache_result=str(getattr(provider, "last_cache_result", "") or ""),
+            provider_considered=1,
+            live_attempts=int(getattr(provider, "last_attempts", 0) or 0),
+            retries=max(0, int(getattr(provider, "last_attempts", 0) or 0) - 1),
+            outcome=str(outcome or ""),
+            selected_plan_id=str(
+                getattr(verdict.response, "selected_plan_id", "") or ""
+                if verdict.response is not None else ""),
+            validator_valid=int(bool(verdict.valid)),
+            validator_reason=str(verdict.reason or ""),
+            physically_valid=physically_valid,
+            activated=int(activated),
+            tokens_input=getattr(usage, "tokens_prompt", None),
+            tokens_cached_input=getattr(usage, "cached_tokens_prompt", None),
+            tokens_output=getattr(usage, "tokens_completion", None),
+            tokens_reasoning=getattr(usage, "tokens_reasoning", None),
+            returned_model=str(getattr(provider, "last_returned_model", "") or ""),
+            latency_s=getattr(usage, "latency_s", None),
+            request_id=str(getattr(provider, "last_request_id", "") or ""),
+        )
 
     # -- the single per-transition path -------------------------------------
 
@@ -424,11 +557,12 @@ class GuidanceController:
 
         # Stage D bookkeeping only. Counted before any suppression, so the gap
         # to provider_request_considered_count is exactly the suppressed set.
+        detector_events = sum(
+            1 for r in (event_rows or ())
+            if r.get("row_type") == "coalesced_event"
+        )
         if self.accounting is not None:
-            self.accounting.detector_event_count += sum(
-                1 for r in (event_rows or ())
-                if r.get("row_type") == "coalesced_event"
-            )
+            self.accounting.detector_event_count += detector_events
 
         # 1. TTL accounting: g_t served this transition as guidance_before.
         if self.active is not None:
@@ -442,6 +576,7 @@ class GuidanceController:
 
         queried = activated = provider_valid = 0
         fallback = ""
+        decisions = ()
         if not self.enabled:
             pass
         elif episode_ended:
@@ -450,7 +585,7 @@ class GuidanceController:
             if self.accounting is not None:
                 self.accounting.terminal_suppressed_event_count += suppressed
         else:
-            queried, activated, provider_valid, fallback = self._offer(
+            queried, activated, provider_valid, fallback, decisions = self._offer(
                 event_rows, post_agent_positions, step
             )
 
@@ -510,6 +645,8 @@ class GuidanceController:
             usage=getattr(self.provider, "last_usage", None) if queried else None,
             stored_terminated=int(bool(stored_terminated)),
             terminal_cause=str(terminal_cause or ""),
+            decisions=decisions,
+            detector_events=detector_events,
         )
 
     # -- reward -------------------------------------------------------------
@@ -538,7 +675,130 @@ def _fmt(value):
     return "n/a" if value is None else value
 
 
-class GuidanceCsvWriter:
+class _CsvLogWriter:
+    """Append-only CSV with a strictly validated header.
+
+    Every SELMA durable log goes through this. ``DictWriter`` writes values in
+    *this* build's column order, so appending to a file whose header has
+    different columns shifts every value silently -- a reader then parses one
+    column as another and, if the types happen to line up, never notices. That
+    is exactly what happened when ``selected_plan_id`` was added and a stale log
+    from the previous build was still on disk. Subclasses declare ``COLUMNS``;
+    the header is written once and checked on every later append.
+    """
+
+    COLUMNS = ()
+
+    def __init__(self, path):
+        self.path = path
+        directory = os.path.dirname(os.path.abspath(path))
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+
+    def _append(self, row):
+        missing = [c for c in self.COLUMNS if c not in row]
+        extra = [c for c in row if c not in self.COLUMNS]
+        if missing or extra:
+            raise ValueError(
+                "row does not match {} columns: missing {}, unexpected {}"
+                .format(type(self).__name__, missing or "none", extra or "none"))
+        need_header = not os.path.exists(self.path) or os.path.getsize(self.path) == 0
+        if not need_header:
+            self._assert_header_matches()
+        with open(self.path, "a", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=self.COLUMNS)
+            if need_header:
+                writer.writeheader()
+            writer.writerow(row)
+
+    def _assert_header_matches(self):
+        """Refuse to append rows under a header from a different build."""
+        with open(self.path, "r", newline="") as handle:
+            existing = next(csv.reader(handle), None)
+        if existing is not None and tuple(existing) != tuple(self.COLUMNS):
+            missing = [c for c in self.COLUMNS if c not in existing]
+            extra = [c for c in existing if c not in self.COLUMNS]
+            raise ValueError(
+                "refusing to append to {!r}: its header was written by a "
+                "different build. Appending would shift every column silently. "
+                "Missing here: {}; unexpected: {}. Delete or move the old log."
+                .format(self.path, missing or "none", extra or "none")
+            )
+
+
+class SelmaDecisionCsvWriter(_CsvLogWriter):
+    """One durable row per detector event the controller considered.
+
+    This is the measurement log. It carries what the per-transition PBRS log
+    structurally cannot: the semantic cache-key digest, the candidate joint-plan
+    count and the provider outcome are properties of an *event*, and one
+    transition may carry several.
+
+    ``key_digest`` is present for every multiple-plan decision whose cache is
+    enabled -- including one refused a live call because the budget ran out --
+    so the number of distinct questions is measurable independently of whether
+    the cache was allowed to fill.
+
+    **Never written here:** prompts, raw response bodies, headers, credentials.
+    Only counts, ids, digests, token totals and the deterministic verdict.
+    """
+
+    COLUMNS = (
+        "t_env", "condition", "seed", "episode_id", "episode_step",
+        "greedy_eval", "beta",
+        "event_id", "decision", "candidate_plan_count", "recipient_count",
+        "key_digest", "cache_result", "provider_considered",
+        "live_attempts", "retries", "outcome",
+        "selected_plan_id", "validator_valid", "validator_reason",
+        "physically_valid", "activated",
+        "tokens_input", "tokens_cached_input", "tokens_output",
+        "tokens_reasoning", "returned_model", "latency_s", "request_id",
+        "detector_events_this_transition",
+    )
+
+    def write_rows(self, record, *, t_env, condition, seed, episode_id,
+                   greedy_eval=0):
+        """One row per decision on this transition. Returns the count written."""
+        for decision in record.decisions:
+            self._append({
+                "t_env": t_env,
+                "condition": condition,
+                "seed": seed,
+                "episode_id": episode_id,
+                "episode_step": record.step,
+                # Structurally always 0: the runner drops the controller in
+                # test_mode, so no decision can originate from greedy
+                # evaluation. Logged so the claim is measured, not asserted.
+                "greedy_eval": int(bool(greedy_eval)),
+                "beta": record.beta,
+                "event_id": decision.event_id,
+                "decision": decision.decision,
+                "candidate_plan_count": decision.candidate_plan_count,
+                "recipient_count": decision.recipient_count,
+                "key_digest": decision.key_digest,
+                "cache_result": decision.cache_result,
+                "provider_considered": decision.provider_considered,
+                "live_attempts": decision.live_attempts,
+                "retries": decision.retries,
+                "outcome": decision.outcome,
+                "selected_plan_id": decision.selected_plan_id,
+                "validator_valid": decision.validator_valid,
+                "validator_reason": decision.validator_reason,
+                "physically_valid": decision.physically_valid,
+                "activated": decision.activated,
+                "tokens_input": _fmt(decision.tokens_input),
+                "tokens_cached_input": _fmt(decision.tokens_cached_input),
+                "tokens_output": _fmt(decision.tokens_output),
+                "tokens_reasoning": _fmt(decision.tokens_reasoning),
+                "returned_model": decision.returned_model,
+                "latency_s": _fmt(decision.latency_s),
+                "request_id": decision.request_id,
+                "detector_events_this_transition": record.detector_events,
+            })
+        return len(record.decisions)
+
+
+class GuidanceCsvWriter(_CsvLogWriter):
     """Per-transition PBRS log (spec C.7). Append-only; header on first write.
 
     Column notes:
@@ -576,20 +836,17 @@ class GuidanceCsvWriter:
         "beta", "gamma",
         "phi_before", "potential_after_real", "phi_after_effective",
         "phi_components", "pbrs_term_unscaled", "shaping_contribution",
-        "query_tokens_prompt", "query_tokens_completion", "query_latency_s",
-        "query_cost_usd",
+        "query_tokens_prompt", "query_tokens_cached_prompt",
+        "query_tokens_completion", "query_latency_s", "query_cost_usd",
+        "query_returned_model",
+        "detector_events", "decisions", "zero_plan_decisions",
+        "singleton_decisions", "multiple_plan_decisions", "greedy_eval",
         "provider_calls", "total_queries", "activations", "replacements",
         "expiries", "rejected", "terminal_suppressed_events",
     )
 
-    def __init__(self, path):
-        self.path = path
-        directory = os.path.dirname(os.path.abspath(path))
-        if directory:
-            os.makedirs(directory, exist_ok=True)
-
     def write_row(self, record, controller, t_env, condition, seed, episode_id,
-                  condition_checked=1):
+                  condition_checked=1, greedy_eval=0):
         usage = record.usage
         row = {
             "t_env": t_env,
@@ -631,9 +888,24 @@ class GuidanceCsvWriter:
             "pbrs_term_unscaled": record.pbrs_term_unscaled,
             "shaping_contribution": record.shaping_contribution,
             "query_tokens_prompt": _fmt(usage.tokens_prompt if usage else None),
+            "query_tokens_cached_prompt": _fmt(
+                getattr(usage, "cached_tokens_prompt", None) if usage else None),
             "query_tokens_completion": _fmt(usage.tokens_completion if usage else None),
             "query_latency_s": _fmt(usage.latency_s if usage else None),
+            # Deliberately never computed here: monetary cost is recomputed from
+            # token counts and a separately dated price table.
             "query_cost_usd": _fmt(usage.cost_usd if usage else None),
+            "query_returned_model": getattr(
+                controller.provider, "last_returned_model", "") or "",
+            "detector_events": record.detector_events,
+            "decisions": len(record.decisions),
+            "zero_plan_decisions": sum(
+                1 for d in record.decisions if d.decision == DECISION_ZERO_PLAN),
+            "singleton_decisions": sum(
+                1 for d in record.decisions if d.decision == DECISION_SINGLETON),
+            "multiple_plan_decisions": sum(
+                1 for d in record.decisions if d.decision == DECISION_MULTIPLE),
+            "greedy_eval": int(bool(greedy_eval)),
             "provider_calls": controller.provider_call_count,
             "total_queries": controller.query_count,
             "activations": controller.activation_count,
@@ -642,34 +914,4 @@ class GuidanceCsvWriter:
             "rejected": controller.rejected_count,
             "terminal_suppressed_events": controller.terminal_suppressed_events,
         }
-        need_header = not os.path.exists(self.path) or os.path.getsize(self.path) == 0
-        if not need_header:
-            self._assert_header_matches()
-        with open(self.path, "a", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=self.COLUMNS)
-            if need_header:
-                writer.writeheader()
-            writer.writerow(row)
-
-    def _assert_header_matches(self):
-        """Refuse to append rows under a header from a different build.
-
-        ``DictWriter`` writes values in *this* build's column order. Appending to
-        a file whose header has different columns therefore shifts every value
-        silently -- a reader then parses one column as another and, if the types
-        happen to line up, never notices. That is exactly what happened when
-        ``selected_plan_id`` was added and a stale log from the previous build
-        was still on disk: the verifier read an empty string where
-        ``pbrs_term_unscaled`` should have been. Fail loudly instead.
-        """
-        with open(self.path, "r", newline="") as handle:
-            existing = next(csv.reader(handle), None)
-        if existing is not None and tuple(existing) != tuple(self.COLUMNS):
-            missing = [c for c in self.COLUMNS if c not in existing]
-            extra = [c for c in existing if c not in self.COLUMNS]
-            raise ValueError(
-                "refusing to append to {!r}: its header was written by a "
-                "different build. Appending would shift every column silently. "
-                "Missing here: {}; unexpected: {}. Delete or move the old log."
-                .format(self.path, missing or "none", extra or "none")
-            )
+        self._append(row)

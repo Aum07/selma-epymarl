@@ -123,11 +123,16 @@ class EpisodeRunner:
         # which is bit-identical to unshaped QMIX (contract 5A).
         self.selma_guidance = None
         self.selma_guidance_writer = None
+        self.selma_decision_writer = None
         self.selma_accounting = None
         self.selma_cache = None
         self.selma_gateway = None
         if self.selma_config.guidance_enabled:
-            from selma.guidance import GuidanceController, GuidanceCsvWriter
+            from selma.guidance import (
+                GuidanceController,
+                GuidanceCsvWriter,
+                SelmaDecisionCsvWriter,
+            )
             from selma.provider_registry import is_live_provider, make_provider
 
             if self.selma_bank is None:
@@ -172,6 +177,13 @@ class EpisodeRunner:
                 self.selma_guidance_writer = GuidanceCsvWriter(
                     self.selma_config.guidance_log_csv
                 )
+            # Stage D measurement log: one durable row per detector event,
+            # carrying the semantic cache-key digest that the per-transition
+            # log structurally cannot hold (a transition may have several).
+            if self.selma_config.decision_log_csv:
+                self.selma_decision_writer = SelmaDecisionCsvWriter(
+                    self.selma_config.decision_log_csv
+                )
 
     def _build_selma_stage_d(self, provider, condition):
         """Accounting, cache and gateway for one run. Returns the three objects.
@@ -182,6 +194,7 @@ class EpisodeRunner:
         """
         from selma.accounting import SelmaAccounting
         from selma.gateway import CACHE_OFF, ProviderGateway
+        from selma.pricing import CostBudget, PriceTable
         from selma.provider_registry import is_live_provider
 
         config = self.selma_config
@@ -211,6 +224,22 @@ class EpisodeRunner:
                 read_only=config.cache_mode == "read_only",
             )
 
+        # A conservative monetary ceiling, checked before every live attempt
+        # alongside the call cap. Built only when the run supplied dated rates;
+        # no price is hard-coded anywhere in this build.
+        cost_budget = None
+        if config.cost_cap_usd > 0.0:
+            cost_budget = CostBudget(
+                cap_usd=config.cost_cap_usd,
+                price_table=PriceTable(
+                    date=config.price_table_date,
+                    input_usd_per_mtok=config.price_input_usd_per_mtok,
+                    cached_input_usd_per_mtok=config.price_cached_input_usd_per_mtok,
+                    output_usd_per_mtok=config.price_output_usd_per_mtok,
+                ),
+                max_output_tokens=config.provider_max_output_tokens,
+            )
+
         gateway = ProviderGateway(
             provider,
             accounting=accounting,
@@ -219,6 +248,7 @@ class EpisodeRunner:
             live_call_cap=config.live_call_cap,
             condition=condition,
             grid_shape=self.selma_bank.grid_shape,
+            cost_budget=cost_budget,
             # A provider that cannot perform network I/O is always allowed; a
             # live one is allowed only while the cap has room.
             allow_live_calls=True,
@@ -294,6 +324,9 @@ class EpisodeRunner:
         if selma_guidance is not None:
             selma_guidance.reset_episode()
         selma_guidance_writer = self.selma_guidance_writer if not test_mode else None
+        # Both durable logs are training-only for the same structural reason the
+        # controller is: greedy evaluation never constructs a decision at all.
+        selma_decision_writer = self.selma_decision_writer if not test_mode else None
         # SELMA Stage C: phi_before(t) is phi_after_effective(t-1), carried
         # forward rather than recomputed, so the boundary identity holds by
         # construction. It starts at 0.0 because reset_episode cleared guidance.
@@ -490,17 +523,28 @@ class EpisodeRunner:
                 selma_phi_before = selma_record.phi_after_effective
                 selma_shaping_total += selma_record.shaping_contribution
                 selma_last_stored_terminated = bool(stored_terminated)
+                selma_condition = str(
+                    self.args.env_args.get("key", self.args.env)
+                )
                 if selma_guidance_writer is not None:
                     selma_guidance_writer.write_row(
                         record=selma_record,
                         controller=selma_guidance,
                         t_env=self.t_env + self.t,
-                        condition=str(
-                            self.args.env_args.get("key", self.args.env)
-                        ),
+                        condition=selma_condition,
                         seed=self.args.seed,
                         episode_id=selma_episode_id,
                         condition_checked=1,
+                        greedy_eval=0,
+                    )
+                if selma_decision_writer is not None:
+                    selma_decision_writer.write_rows(
+                        selma_record,
+                        t_env=self.t_env + self.t,
+                        condition=selma_condition,
+                        seed=self.args.seed,
+                        episode_id=selma_episode_id,
+                        greedy_eval=0,
                     )
 
             if self.args.common_reward:

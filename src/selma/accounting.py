@@ -92,6 +92,7 @@ class SelmaAccounting:
         #: Joint-plan decision accounting. These three partition every eligible
         #: event that produced a request, and only the third may reach a cache
         #: or a provider.
+        self.cost_exhausted_count = 0
         self.zero_plan_skip_count = 0
         self.singleton_skip_count = 0
         self.multiple_plan_decision_count = 0
@@ -168,6 +169,16 @@ class SelmaAccounting:
         if request_id:
             self.request_ids.append(str(request_id))
 
+    def cost_usd(self, price_table):
+        """Cost of everything recorded so far, or ``None`` if not calculable.
+
+        ``None`` means *no dated price table was supplied*, and must never be
+        rendered as ``0.0``.
+        """
+        from selma.pricing import accounting_cost_usd
+
+        return accounting_cost_usd(self, price_table)
+
     def snapshot(self):
         return {name: getattr(self, name) for name in COUNTER_NAMES}
 
@@ -175,6 +186,7 @@ class SelmaAccounting:
         data = self.snapshot()
         data.update({
             "terminal_suppressed_event_count": self.terminal_suppressed_event_count,
+            "cost_exhausted_count": self.cost_exhausted_count,
             "zero_plan_skip_count": self.zero_plan_skip_count,
             "singleton_skip_count": self.singleton_skip_count,
             "multiple_plan_decision_count": self.multiple_plan_decision_count,

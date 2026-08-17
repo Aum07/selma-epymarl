@@ -32,6 +32,7 @@ selma_variant_id: "" # SELMA: restrict the detector bank to one variant id (empt
 selma_beta: 0.0 # SELMA Stage C: PBRS shaping scale, applied exactly once. 0.0 = no shaping (default; bit-identical to off)
 selma_provider: "none" # SELMA: none | deterministic_mock | openai. Legal only with selma_mode=active; openai is disabled unless named here explicitly
 selma_guidance_log_csv: "" # SELMA Stage C: path for the per-transition PBRS log (empty = disabled)
+selma_decision_log_csv: "" # SELMA Stage D: path for the per-detector-event decision/measurement log, incl. semantic cache-key digest (empty = disabled)
 # --- SELMA Stage D: provider cache and live-call budget. All inert by default;
 # the OpenAI provider is disabled unless selma_provider is set to it explicitly.
 selma_cache_mode: "off" # SELMA Stage D: off | read_write | read_only. Legal only with selma_mode=active
@@ -43,6 +44,10 @@ selma_provider_max_retries: 1 # SELMA Stage D: retries after the first attempt; 
 selma_provider_backoff_s: 0.5 # SELMA Stage D: base backoff between attempts (exponential)
 selma_provider_max_output_tokens: 512 # SELMA Stage D: bounded output length
 selma_price_table_date: "" # SELMA Stage D: dated price table used to recompute cost from stored token counts (cost is never hard-coded)
+selma_price_input_usd_per_mtok: 0.0 # SELMA Stage D: USD per 1M input tokens, from the dated table above. 0 = cost not calculated
+selma_price_cached_input_usd_per_mtok: 0.0 # SELMA Stage D: USD per 1M provider-side cached-input tokens (NOT the SQLite response cache)
+selma_price_output_usd_per_mtok: 0.0 # SELMA Stage D: USD per 1M output tokens
+selma_cost_cap_usd: 0.0 # SELMA Stage D: conservative spend ceiling checked before every live attempt; requires the dated rates above. 0 = no monetary ceiling
 use_wandb: False # Log results to W&B
 wandb_team: null # W&B team name
 wandb_project: null # W&B project name

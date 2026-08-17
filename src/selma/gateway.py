@@ -50,7 +50,7 @@ class ProviderGateway:
 
     def __init__(self, provider, *, accounting, cache=None, cache_mode=CACHE_OFF,
                  live_call_cap=None, condition="", grid_shape=(0, 0),
-                 allow_live_calls=True):
+                 allow_live_calls=True, cost_budget=None):
         if cache_mode not in CACHE_MODES:
             raise ValueError(
                 "selma_cache_mode={!r} is not one of {}".format(cache_mode, CACHE_MODES))
@@ -62,10 +62,31 @@ class ProviderGateway:
         self.condition = str(condition)
         self.grid_shape = tuple(grid_shape)
         self.allow_live_calls = bool(allow_live_calls)
+        #: Optional conservative spend ceiling, checked before every attempt
+        #: alongside the call cap. ``None`` means no monetary ceiling.
+        self.cost_budget = cost_budget
 
         self.last_fallback_reason = ""
         self.last_usage = getattr(provider, "last_usage", None)
         self._pending = None  # state carried from query() to note_validation()
+
+        #: Measurement instrumentation, read by the controller after every
+        #: query. ``last_key_digest`` is the *semantic* cache key -- scheme B,
+        #: episode-independent -- and is set for **every** considered request
+        #: whose cache is enabled, including one that is then refused a live
+        #: call because the budget is exhausted. Counting distinct questions
+        #: must not depend on whether the cache was allowed to fill.
+        self.last_key_digest = ""
+        self.last_cache_result = ""      # "hit" | "miss" | "off"
+        #: Per-query provider detail, *attributed correctly*. These are not
+        #: passthroughs: on a cache hit the underlying provider was never
+        #: called, so reading its attributes would report the previous live
+        #: call's attempts, model and request id against an event that cost
+        #: nothing. A hit reports zero attempts and the model recorded in the
+        #: stored row.
+        self.last_attempts = 0
+        self.last_returned_model = ""
+        self.last_request_id = ""
 
     # -- identity passthrough ------------------------------------------------
 
@@ -102,11 +123,24 @@ class ProviderGateway:
         The rule is deliberately "every request attempt", not "every logical
         query": a retry is a real request that costs real money and real
         latency, so it must be visible to the cap.
+
+        Two independent ceilings are checked here, and either one refusing means
+        the attempt is not made: the call cap, and -- when configured -- a
+        conservative monetary projection. Refusal is the ordinary
+        ``budget_exhausted`` path: the cache lookup already happened, a hit
+        could already have been served, and a miss yields no guidance and
+        ``F_t = 0``. It is never a reason to substitute anything.
         """
         if self.live_call_cap is not None and \
                 self.accounting.live_api_call_count >= int(self.live_call_cap):
             self._pending_budget_exhausted = True
             return False
+        if self.cost_budget is not None:
+            spent = self.accounting.cost_usd(self.cost_budget.price_table)
+            if self.cost_budget.would_exceed(spent or 0.0):
+                self._pending_budget_exhausted = True
+                self.accounting.cost_exhausted_count += 1
+                return False
         self.accounting.live_api_call_count += 1
         if attempt_index > 0:
             self.accounting.retry_count += 1
@@ -118,6 +152,11 @@ class ProviderGateway:
         """Lookup, then (if permitted) call. Returns a response or ``None``."""
         self.last_fallback_reason = ""
         self._pending_budget_exhausted = False
+        self.last_key_digest = ""
+        self.last_cache_result = "off"
+        self.last_attempts = 0
+        self.last_returned_model = ""
+        self.last_request_id = ""
         self.accounting.provider_request_considered_count += 1
 
         digest = canonical = None
@@ -134,12 +173,21 @@ class ProviderGateway:
             )
             canonical = canonical_json(payload)
             digest = key_digest(canonical)
+            # Recorded before any budget or mode check, so a budget-exhausted
+            # event still contributes its question to the distinct-key count.
+            self.last_key_digest = digest
             self.accounting.cache_lookup_count += 1
             hit = self.cache.lookup(digest, canonical)
             if hit is not None:
                 response = self._rebuild(hit, request)
                 if response is not None:
                     self.accounting.cache_hit_count += 1
+                    self.last_cache_result = "hit"
+                    # A hit made no request: zero attempts, no request id, and
+                    # the model is whichever one originally answered.
+                    self.last_attempts = 0
+                    self.last_returned_model = str(hit.get("returned_model") or "")
+                    self.last_request_id = ""
                     self._pending = {"source": "cache", "digest": digest,
                                      "canonical": canonical, "metadata": hit["metadata"],
                                      "returned_model": hit.get("returned_model")}
@@ -150,6 +198,7 @@ class ProviderGateway:
                 self.accounting.stale_hit_count += 1
                 self._note_stale(MISS_STALE_REVALIDATION)
             self.accounting.cache_miss_count += 1
+            self.last_cache_result = "miss"
             self._sync_stale_reasons()
 
         self._pending = {"source": "live", "digest": digest, "canonical": canonical,
@@ -181,6 +230,14 @@ class ProviderGateway:
             pass
 
         self.last_usage = getattr(self.provider, "last_usage", None)
+        self.last_attempts = int(getattr(self.provider, "last_attempts", 0) or 0)
+        self.last_returned_model = str(
+            getattr(self.provider, "last_returned_model", "") or "")
+        self.last_request_id = str(
+            getattr(self.provider, "last_request_id", "") or "")
+        if self.cost_budget is not None:
+            self.cost_budget.note_usage(
+                getattr(self.last_usage, "tokens_prompt", None))
         self._pending["metadata"] = self._metadata()
         self._pending["returned_model"] = getattr(self.provider, "last_returned_model", None)
         if response is None:

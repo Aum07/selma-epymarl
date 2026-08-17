@@ -49,6 +49,8 @@ class SelmaRuntimeConfig(NamedTuple):
     detector_enabled: bool
     guidance_enabled: bool
     guidance_log_csv: str
+    #: Stage D measurement log: one row per detector event. Active mode only.
+    decision_log_csv: str = ""
     # -- Stage D: cache and live-call budget. Inert unless mode is active.
     cache_mode: str = "off"
     cache_path: str = ""
@@ -59,6 +61,13 @@ class SelmaRuntimeConfig(NamedTuple):
     provider_backoff_s: float = 0.5
     provider_max_output_tokens: int = 512
     price_table_date: str = ""
+    #: Dated per-million-token rates. No price is hard-coded anywhere in this
+    #: build; a cost ceiling without them is a configuration error.
+    price_input_usd_per_mtok: float = 0.0
+    price_cached_input_usd_per_mtok: float = 0.0
+    price_output_usd_per_mtok: float = 0.0
+    #: Conservative spend ceiling in USD. 0.0 means "no monetary ceiling".
+    cost_cap_usd: float = 0.0
 
 
 def _get(args, name, default):
@@ -83,6 +92,7 @@ def validate_selma_config(args):
     provider = str(_get(args, "selma_provider", PROVIDER_NONE) or PROVIDER_NONE)
     variant_id = str(_get(args, "selma_variant_id", "") or "")
     guidance_log_csv = str(_get(args, "selma_guidance_log_csv", "") or "")
+    decision_log_csv = str(_get(args, "selma_decision_log_csv", "") or "")
 
     raw_beta = _get(args, "selma_beta", 0.0)
     try:
@@ -113,6 +123,11 @@ def validate_selma_config(args):
             raise SelmaConfigError(
                 "selma_guidance_log_csv is set but selma_mode={!r} produces no "
                 "guidance transitions to log.".format(mode)
+            )
+        if decision_log_csv:
+            raise SelmaConfigError(
+                "selma_decision_log_csv is set but selma_mode={!r} produces no "
+                "guidance decisions to log.".format(mode)
             )
 
     if mode == MODE_OFF and variant_id:
@@ -158,6 +173,28 @@ def validate_selma_config(args):
 
     cache_mode, cache_path, allow_shared, live_call_cap = _validate_stage_d(args, mode)
 
+    from selma.pricing import PriceTableError, price_table_from_args
+
+    price_table = price_table_from_args(args, _get)
+    try:
+        cost_cap = float(_get(args, "selma_cost_cap_usd", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        raise SelmaConfigError("selma_cost_cap_usd must be a number.")
+    if cost_cap < 0.0:
+        raise SelmaConfigError(
+            "selma_cost_cap_usd={!r} must be >= 0. Use 0 for no monetary "
+            "ceiling; there is no unlimited-but-priced setting.".format(cost_cap))
+    if cost_cap > 0.0 and not price_table.usable:
+        raise SelmaConfigError(
+            "selma_cost_cap_usd={} was set without a dated price table. Supply "
+            "selma_price_table_date and the per-million-token rates: no price "
+            "is hard-coded in this build, so a ceiling without them would "
+            "silently permit everything.".format(cost_cap))
+    if cost_cap > 0.0 and mode != MODE_ACTIVE:
+        raise SelmaConfigError(
+            "selma_cost_cap_usd requires selma_mode={!r}; got {!r}."
+            .format(MODE_ACTIVE, mode))
+
     return SelmaRuntimeConfig(
         mode=mode,
         provider=provider,
@@ -166,6 +203,7 @@ def validate_selma_config(args):
         detector_enabled=mode in (MODE_SHADOW, MODE_ACTIVE),
         guidance_enabled=mode == MODE_ACTIVE,
         guidance_log_csv=guidance_log_csv,
+        decision_log_csv=decision_log_csv,
         cache_mode=cache_mode,
         cache_path=cache_path,
         cache_allow_shared_write=allow_shared,
@@ -176,6 +214,10 @@ def validate_selma_config(args):
         provider_max_output_tokens=int(
             _get(args, "selma_provider_max_output_tokens", 512)),
         price_table_date=str(_get(args, "selma_price_table_date", "") or ""),
+        price_input_usd_per_mtok=price_table.input_usd_per_mtok,
+        price_cached_input_usd_per_mtok=price_table.cached_input_usd_per_mtok,
+        price_output_usd_per_mtok=price_table.output_usd_per_mtok,
+        cost_cap_usd=cost_cap,
     )
 
 
