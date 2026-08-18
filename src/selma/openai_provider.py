@@ -264,7 +264,18 @@ def default_client_factory(api_key_env=API_KEY_ENV, timeout=DEFAULT_TIMEOUT_S):
         )
     from openai import OpenAI  # lazy: never imported in off/shadow/mock runs
 
-    return OpenAI(api_key=api_key, timeout=timeout)
+    # max_retries=0 disables the SDK's own transport retries so that EVERY retry
+    # is one the ledger can see. attempt_hook fires once per adapter attempt,
+    # immediately before _create(); an SDK retry would happen inside that call,
+    # below the hook, and would therefore consume neither the live-call cap nor
+    # the cost ceiling while still costing real requests. The adapter keeps its
+    # own single bounded retry (selma_provider_max_retries=1), which IS counted.
+    #
+    # Historical note: the six accepted Stage E recalibration runs (execution
+    # commit 53d9a2e) ran BEFORE this correction and therefore inherited the SDK
+    # default of 2. Their log-reconstructed HTTP counts are recorded in
+    # docs/project/selma_stage_e_beta_recalibration_runs_2026-08-18.md.
+    return OpenAI(api_key=api_key, timeout=timeout, max_retries=0)
 
 
 class OpenAIGuidanceProvider(GuidanceProvider):
