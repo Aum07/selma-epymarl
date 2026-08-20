@@ -118,31 +118,80 @@ class ActiveGuidance:
         return self.transitions_served >= TTL_STEPS
 
 
-def phi_components(guidance, agent_positions, food_positions, grid_shape):
+#: V1 potential: every recipient is measured against the *detector-chosen food
+#: coordinate*. The selected plan's per-agent assignments are not read, so all
+#: offered plans yield a bit-identical potential and the provider's choice has
+#: no causal path to the reward. Kept as the default so every completed Stage E
+#: run reproduces exactly.
+POTENTIAL_FOOD = "food"
+
+#: V2 potential: every recipient is measured against *its own assigned loading
+#: cell* from the selected joint plan. This is the only change that gives the
+#: provider's selection a causal channel into the shaping reward.
+POTENTIAL_PLAN = "plan"
+
+POTENTIAL_MODES = (POTENTIAL_FOOD, POTENTIAL_PLAN)
+
+
+def phi_components(guidance, agent_positions, food_positions, grid_shape,
+                   potential_mode=POTENTIAL_FOOD):
     """Per-recipient potential components for an active guidance.
 
-    ``phi_i = -(manhattan(agent_i, food) + 1 if food exists) / d_max_plus_load``
+    ``POTENTIAL_FOOD`` (V1, default, unchanged)::
+
+        phi_i = -(manhattan(agent_i, food) + 1 if food exists) / d_max_plus_load
+
+    ``POTENTIAL_PLAN`` (V2)::
+
+        phi_i = -(manhattan(agent_i, assigned_cell_i) + 1 if food exists) / d_max_plus_load
+
+    where ``assigned_cell_i`` is the loading cell the *selected joint plan*
+    gives agent ``i``. Both forms depend only on the augmented state
+    ``(environment state, active guidance)``, so the dynamic-PBRS invariance
+    argument is unchanged; what changes is that the plan's content now enters.
+
+    Fails closed: in ``POTENTIAL_PLAN`` a guidance that carries no assignment
+    for a recipient yields **no components at all**, hence ``phi = 0`` and
+    ``F_t = 0``, rather than silently falling back to the food coordinate.
+
     Returns ``{agent_id: phi_i}``; empty when there is no active guidance.
     """
     if guidance is None:
         return {}
+    mode = str(potential_mode)
+    if mode not in POTENTIAL_MODES:
+        raise ValueError(
+            "potential_mode={!r} is not a known SELMA potential. Legal: {}."
+            .format(potential_mode, ", ".join(POTENTIAL_MODES))
+        )
     dmax = d_max_plus_load(grid_shape)
     food_exists = tuple(guidance.food_position) in {tuple(p) for p in (food_positions or ())}
+    assignments = getattr(guidance, "assignments", None) or {}
     out = {}
     for a in guidance.recipients:
         pos = (agent_positions or {}).get(a)
         if pos is None:
             continue
-        d = abs(int(pos[0]) - guidance.food_position[0]) + abs(int(pos[1]) - guidance.food_position[1])
+        if mode == POTENTIAL_PLAN:
+            assigned = assignments.get(a)
+            if assigned is None:
+                # No plan content for a required recipient: refuse to shape.
+                return {}
+            target = (int(assigned[1][0]), int(assigned[1][1]))
+        else:
+            target = (int(guidance.food_position[0]), int(guidance.food_position[1]))
+        d = abs(int(pos[0]) - target[0]) + abs(int(pos[1]) - target[1])
         if food_exists:
             d += 1  # the terminal LOAD action
         out[a] = -float(d) / float(dmax)
     return out
 
 
-def phi(guidance, agent_positions, food_positions, grid_shape):
+def phi(guidance, agent_positions, food_positions, grid_shape,
+        potential_mode=POTENTIAL_FOOD):
     """Joint potential: mean over active recipients; 0.0 when no guidance."""
-    comps = phi_components(guidance, agent_positions, food_positions, grid_shape)
+    comps = phi_components(guidance, agent_positions, food_positions, grid_shape,
+                           potential_mode=potential_mode)
     if not comps:
         return 0.0
     return sum(comps.values()) / float(len(comps))
@@ -276,8 +325,16 @@ class GuidanceController:
     """
 
     def __init__(self, provider, grid_shape, beta, gamma, enabled, variant_id,
-                 accounting=None):
+                 accounting=None, potential_mode=POTENTIAL_FOOD):
         self.provider = provider
+        #: Which potential the run uses. ``POTENTIAL_FOOD`` is V1 and the
+        #: default, so an unmodified config reproduces Stage E exactly.
+        if str(potential_mode) not in POTENTIAL_MODES:
+            raise ValueError(
+                "potential_mode={!r} is not a known SELMA potential. Legal: {}."
+                .format(potential_mode, ", ".join(POTENTIAL_MODES))
+            )
+        self.potential_mode = str(potential_mode)
         #: Optional Stage D accounting (selma.accounting.SelmaAccounting).
         #: ``None`` keeps the Stage C behaviour exactly: nothing is recorded and
         #: no code path below changes.
@@ -322,10 +379,12 @@ class GuidanceController:
     # -- potential ----------------------------------------------------------
 
     def potential(self, agent_positions, food_positions):
-        return phi(self.active, agent_positions, food_positions, self.grid_shape)
+        return phi(self.active, agent_positions, food_positions, self.grid_shape,
+                   potential_mode=self.potential_mode)
 
     def potential_components(self, agent_positions, food_positions):
-        return phi_components(self.active, agent_positions, food_positions, self.grid_shape)
+        return phi_components(self.active, agent_positions, food_positions,
+                              self.grid_shape, potential_mode=self.potential_mode)
 
     # -- lifecycle ----------------------------------------------------------
 

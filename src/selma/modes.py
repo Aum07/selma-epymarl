@@ -68,6 +68,13 @@ class SelmaRuntimeConfig(NamedTuple):
     price_output_usd_per_mtok: float = 0.0
     #: Conservative spend ceiling in USD. 0.0 means "no monetary ceiling".
     cost_cap_usd: float = 0.0
+    #: SELMA V2: which potential the shaping term is built from.
+    #: ``"food"`` is V1 and the default -- distance to the detector-chosen food
+    #: coordinate, identical for every offered plan, which is why the provider's
+    #: selection had no causal path to the reward in Stage E.
+    #: ``"plan"`` measures each recipient against its own assigned loading cell
+    #: from the selected joint plan, so the selection enters the reward.
+    potential_mode: str = "food"
 
 
 def _get(args, name, default):
@@ -171,6 +178,8 @@ def validate_selma_config(args):
                 "no per-agent shaping and none will be invented.".format(MODE_ACTIVE)
             )
 
+    potential_mode = _validate_potential(args, mode)
+
     cache_mode, cache_path, allow_shared, live_call_cap = _validate_stage_d(args, mode)
 
     from selma.pricing import PriceTableError, price_table_from_args
@@ -218,7 +227,35 @@ def validate_selma_config(args):
         price_cached_input_usd_per_mtok=price_table.cached_input_usd_per_mtok,
         price_output_usd_per_mtok=price_table.output_usd_per_mtok,
         cost_cap_usd=cost_cap,
+        potential_mode=potential_mode,
     )
+
+
+def _validate_potential(args, mode):
+    """Validate the SELMA V2 potential selector.
+
+    Defaults to the V1 potential, so a configuration written before V2 existed
+    reproduces Stage E bit-for-bit. Naming the V2 potential outside active mode
+    is a configuration error rather than an ignored setting: there is no
+    guidance to condition on, and silently ignoring it is exactly how a run ends
+    up measuring something other than what its command line says.
+    """
+    from selma.guidance import POTENTIAL_FOOD, POTENTIAL_MODES
+
+    potential_mode = str(_get(args, "selma_potential_mode", POTENTIAL_FOOD)
+                         or POTENTIAL_FOOD)
+    if potential_mode not in POTENTIAL_MODES:
+        raise SelmaConfigError(
+            "selma_potential_mode={!r} is not a known SELMA potential. Legal: "
+            "{}.".format(potential_mode, ", ".join(POTENTIAL_MODES))
+        )
+    if potential_mode != POTENTIAL_FOOD and mode != MODE_ACTIVE:
+        raise SelmaConfigError(
+            "selma_potential_mode={!r} requires selma_mode={!r}; got {!r}. "
+            "A plan-conditioned potential needs an active guidance to read a "
+            "plan from.".format(potential_mode, MODE_ACTIVE, mode)
+        )
+    return potential_mode
 
 
 def _validate_stage_d(args, mode):
