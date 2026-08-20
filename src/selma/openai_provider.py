@@ -57,13 +57,18 @@ from selma.accounting import (
 from selma.cache import candidate_plan_ids
 from selma.joint_plans import describe_plan
 from selma.provider import (
+    CONTRACT_V2_TARGET_ALLOCATION,
     ROLE_APPROACH_AND_LOAD,
     ROLE_HOLD_AND_LOAD,
+    ROLE_PURSUE_TARGET,
     SCHEMA_VERSION,
+    V2_SCHEMA_VERSION,
     Assignment,
     GuidanceProvider,
     GuidanceResponse,
+    TargetGuidanceAssignment,
 )
+from selma.target_plans import describe_target_plan
 
 PROVIDER_ID = "openai"
 API_SURFACE = "responses"
@@ -97,6 +102,16 @@ SYSTEM_PROMPT = (
     "different plans, invent plan ids, or supply coordinates, agents or roles "
     "of your own. You do not decide rewards, discounting, shaping scale or "
     "subgoal lifetime."
+)
+
+V2_SYSTEM_PROMPT = (
+    "You are a coordination adviser for Level-Based Foraging (LBF), a "
+    "grid-world task. Each food and agent has an integer level. A food can be "
+    "collected only by adjacent agents whose simultaneous LOAD actions have "
+    "enough combined level. Your one decision is to choose among complete, "
+    "already feasible agent-to-food allocation plans built by code. Return "
+    "exactly one offered selected_plan_id. Do not compose plans or invent "
+    "agents, foods, coordinates, actions, rewards, shaping values, or TTL."
 )
 
 
@@ -158,6 +173,62 @@ def build_prompt(request):
     Nothing episode-scoped enters the payload: no ``event_id`` (which embeds
     the episode number), no ``food_id``, no seed, no step index, no timestamp.
     """
+    if request.guidance_contract == CONTRACT_V2_TARGET_ALLOCATION:
+        plans = [
+            {
+                "plan_id": plan.plan_id,
+                "assignments": [
+                    {
+                        "agent_id": int(a.agent_id),
+                        # Episode-scoped ids are deliberately omitted. The
+                        # position and level give the model all semantics it
+                        # needs while preserving cross-episode cache reuse.
+                        "target_food": {
+                            "position": [int(a.target_position[0]),
+                                         int(a.target_position[1])],
+                            "level": int(a.target_level),
+                        },
+                    }
+                    for a in plan.assignments
+                ],
+                "description": describe_target_plan(plan),
+            }
+            for plan in request.candidate_joint_plans
+        ]
+        payload = {
+            "guidance_contract": request.guidance_contract,
+            "event_type": request.event_type,
+            "trigger_food": {
+                "position": list(request.food_position),
+                "level": int(request.food_level),
+            },
+            "agents": [
+                {
+                    "agent_id": int(c.agent_id),
+                    "level": int(c.level),
+                    "position": list(c.position),
+                }
+                for c in sorted(request.agent_context,
+                                key=lambda c: int(c.agent_id))
+            ],
+            "remaining_foods": [
+                {"position": list(f.position), "level": int(f.level)}
+                for f in request.remaining_foods
+            ],
+            "candidate_joint_plans": plans,
+            "instructions": (
+                "Each candidate is a COMPLETE code-validated allocation of "
+                "every agent to one remaining food. For each used food, the "
+                "assigned agents' combined level is already sufficient; the "
+                "trigger food is assigned in every plan. Choose the allocation "
+                "that best reduces travel and coordination conflict from the "
+                "current positions. Return exactly one offered selected_plan_id. "
+                "Do not invent or modify agents, foods, coordinates, actions, "
+                "rewards, shaping values, or plan contents."
+            ),
+        }
+        return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
     plans = [
         {
             "plan_id": plan.plan_id,
@@ -384,10 +455,16 @@ class OpenAIGuidanceProvider(GuidanceProvider):
         return None
 
     def _create(self, prompt, schema):
+        try:
+            is_v2 = (json.loads(prompt).get("guidance_contract")
+                     == CONTRACT_V2_TARGET_ALLOCATION)
+        except (TypeError, ValueError, AttributeError):
+            is_v2 = False
         return self.client.responses.create(
             model=self.model,
             input=[
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content":
+                 V2_SYSTEM_PROMPT if is_v2 else SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},
             ],
             text={
@@ -451,24 +528,39 @@ class OpenAIGuidanceProvider(GuidanceProvider):
             return None, FALLBACK_MALFORMED       # unknown / invented plan id
 
         recipients = tuple(sorted(int(a) for a in request.recipient_agents))
-        positions = {int(c.agent_id): tuple(int(x) for x in c.position)
-                     for c in request.agent_context}
         mapping = plan.mapping()
         if set(mapping) != set(recipients):
             return None, FALLBACK_MALFORMED
-
-        assignments = tuple(
-            Assignment(
-                agent_id=agent_id,
-                # The role is decided by code from the real position, never by
-                # the model. The cell comes from the code-built plan, so the
-                # model contributes exactly one thing: which plan.
-                role=(ROLE_HOLD_AND_LOAD if positions.get(agent_id) == mapping[agent_id]
-                      else ROLE_APPROACH_AND_LOAD),
-                loading_cell=mapping[agent_id],
+        if request.guidance_contract == CONTRACT_V2_TARGET_ALLOCATION:
+            by_agent = {int(a.agent_id): a for a in plan.assignments}
+            assignments = tuple(
+                TargetGuidanceAssignment(
+                    agent_id=agent_id,
+                    role=ROLE_PURSUE_TARGET,
+                    loading_cell=tuple(by_agent[agent_id].target_position),
+                    target_food_id=tuple(by_agent[agent_id].target_food_id),
+                    target_position=tuple(by_agent[agent_id].target_position),
+                    target_level=int(by_agent[agent_id].target_level),
+                )
+                for agent_id in recipients
             )
-            for agent_id in recipients
-        )
+            schema_version = V2_SCHEMA_VERSION
+        else:
+            positions = {int(c.agent_id): tuple(int(x) for x in c.position)
+                         for c in request.agent_context}
+            assignments = tuple(
+                Assignment(
+                    agent_id=agent_id,
+                    # The role is decided by code from the real position,
+                    # never by the model.
+                    role=(ROLE_HOLD_AND_LOAD
+                          if positions.get(agent_id) == mapping[agent_id]
+                          else ROLE_APPROACH_AND_LOAD),
+                    loading_cell=mapping[agent_id],
+                )
+                for agent_id in recipients
+            )
+            schema_version = SCHEMA_VERSION
         confidence = payload.get("confidence", 1.0)
         try:
             confidence = float(confidence)
@@ -476,7 +568,7 @@ class OpenAIGuidanceProvider(GuidanceProvider):
             return None, FALLBACK_MALFORMED
 
         return GuidanceResponse(
-            schema_version=SCHEMA_VERSION,
+            schema_version=schema_version,
             # Identity, target and coalition are code-fixed. The model cannot
             # retarget the subgoal or change who receives it.
             event_id=request.event_id,

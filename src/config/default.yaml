@@ -30,7 +30,9 @@ selma_max_events_per_episode: 2 # SELMA Stage B lifecycle (calibration value, no
 selma_w_inbound: 3 # SELMA Stage B inbound-help window (shadow comparison only)
 selma_variant_id: "" # SELMA: restrict the detector bank to one variant id (empty = all 48, shadow calibration). Required, and must be the frozen variant, in active mode
 selma_beta: 0.0 # SELMA Stage C: PBRS shaping scale, applied exactly once. 0.0 = no shaping (default; bit-identical to off)
-selma_provider: "none" # SELMA: none | deterministic_mock | openai. Legal only with selma_mode=active; openai is disabled unless named here explicitly
+selma_provider: "none" # SELMA: none | deterministic_mock | openai | heuristic_min_travel | random_valid_plan. The last two are offline controls: same answer set, no network, no cost. Legal only with selma_mode=active; openai is disabled unless named here explicitly
+selma_ttl_steps: 15 # SELMA: advice lifetime in transitions. 15 is the frozen 8x8 value (d_max there is also 15). Larger grids need it raised or guidance expires before an agent reaches its target: d_max is 19 on 10x10 and 29 on 15x15. Legal only with selma_mode=active
+selma_guidance_contract: "v1_loading_cell" # SELMA: v1_loading_cell (historical compatibility) | v2_target_allocation (LLM-selected plan causally changes each agent's target and PBRS potential)
 selma_guidance_log_csv: "" # SELMA Stage C: path for the per-transition PBRS log (empty = disabled)
 selma_decision_log_csv: "" # SELMA Stage D: path for the per-detector-event decision/measurement log, incl. semantic cache-key digest (empty = disabled)
 # --- SELMA Stage D: provider cache and live-call budget. All inert by default;
@@ -81,4 +83,3 @@ obs_last_action: True # Include the agent's last action (one_hot) in the observa
 # --- Experiment running params ---
 repeat_id: 1
 label: "default_label"
-hypergroup: null

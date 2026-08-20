@@ -28,6 +28,7 @@ import sqlite3
 import time
 
 from selma.joint_plans import plan_to_dict
+from selma.target_plans import target_plan_to_dict
 
 #: Storage schema. Bumping this invalidates every stored row -- a database
 #: written under an older value is refused outright, not migrated. Bumped to v2
@@ -78,6 +79,14 @@ INCLUDED_KEY_FIELDS = (
     "allowed_roles",
 )
 
+#: V2 adds the contract discriminator and the complete remaining-food state.
+#: ``INCLUDED_KEY_FIELDS`` itself stays frozen because the V1 key is preserved
+#: byte-for-byte for historical cache compatibility.
+V2_INCLUDED_KEY_FIELDS = INCLUDED_KEY_FIELDS + (
+    "guidance_contract",
+    "remaining_foods",
+)
+
 #: Everything deliberately kept out. Each of these either carries episode
 #: identity, is a logging-only artefact, or is a measurement of the call rather
 #: than of the question -- including any of them would only prevent reuse.
@@ -112,6 +121,14 @@ def candidate_plan_ids(request):
     plan definitions, never these ids alone -- see ``INCLUDED_KEY_FIELDS``.
     """
     return tuple(plan.plan_id for plan in request.candidate_joint_plans)
+
+
+def _plan_to_dict(plan):
+    """Serialise either the preserved V1 cell plan or a V2 target plan."""
+    assignments = getattr(plan, "assignments", ())
+    if assignments and hasattr(assignments[0], "target_food_id"):
+        return target_plan_to_dict(plan)
+    return plan_to_dict(plan)
 
 
 def build_cache_key(request, *, condition, grid_shape, provider, model_snapshot,
@@ -149,7 +166,7 @@ def build_cache_key(request, *, condition, grid_shape, provider, model_snapshot,
                     for cell in ctx.candidate_loading_cells})
     roles = sorted({str(r) for ctx in request.agent_context for r in ctx.allowed_roles})
 
-    return {
+    payload = {
         "cache_schema_version": CACHE_SCHEMA_VERSION,
         "cache_key_version": CACHE_KEY_VERSION,
         "request_schema_version": str(request.schema_version),
@@ -169,10 +186,20 @@ def build_cache_key(request, *, condition, grid_shape, provider, model_snapshot,
         "level_deficit": int(request.level_deficit),
         "required_extra_level": int(request.required_extra_level),
         "candidate_loading_cells": [_cell(c) for c in cells],
-        "candidate_joint_plans": [plan_to_dict(p)
+        "candidate_joint_plans": [_plan_to_dict(p)
                                   for p in request.candidate_joint_plans],
         "allowed_roles": roles,
     }
+    # V1 remains byte-for-byte identical. V2 is already isolated by its request
+    # schema version, and adds the state that defines its legal answer set.
+    from selma.provider import CONTRACT_V2_TARGET_ALLOCATION
+    if request.guidance_contract == CONTRACT_V2_TARGET_ALLOCATION:
+        payload["guidance_contract"] = request.guidance_contract
+        payload["remaining_foods"] = [
+            {"position": _cell(f.position), "level": int(f.level)}
+            for f in request.remaining_foods
+        ]
+    return payload
 
 
 def canonical_json(payload):
@@ -192,13 +219,13 @@ def key_digest(canonical):
 
 
 def request_to_dict(request):
-    return {
+    payload = {
         "schema_version": request.schema_version,
         "event_type": request.event_type,
         "food_position": _cell(request.food_position),
         "food_level": int(request.food_level),
         "grid_shape": [int(request.grid_shape[0]), int(request.grid_shape[1])],
-        "candidate_joint_plans": [plan_to_dict(p)
+        "candidate_joint_plans": [_plan_to_dict(p)
                                   for p in request.candidate_joint_plans],
         "trigger_agent_ids": [int(a) for a in request.trigger_agent_ids],
         "recipient_agents": [int(a) for a in request.recipient_agents],
@@ -215,10 +242,18 @@ def request_to_dict(request):
             for c in sorted(request.agent_context, key=lambda c: int(c.agent_id))
         ],
     }
+    from selma.provider import CONTRACT_V2_TARGET_ALLOCATION
+    if request.guidance_contract == CONTRACT_V2_TARGET_ALLOCATION:
+        payload["guidance_contract"] = request.guidance_contract
+        payload["remaining_foods"] = [
+            {"position": _cell(f.position), "level": int(f.level)}
+            for f in request.remaining_foods
+        ]
+    return payload
 
 
 def response_to_dict(response):
-    return {
+    payload = {
         "schema_version": response.schema_version,
         "event_id": response.event_id,
         "recipients": [int(a) for a in response.recipients],
@@ -232,6 +267,19 @@ def response_to_dict(response):
         ],
         "confidence": float(response.confidence),
     }
+    if any(getattr(a, "target_food_id", ()) for a in response.assignments):
+        payload["assignments"] = [
+            {
+                "agent_id": int(a.agent_id),
+                "role": str(a.role),
+                "loading_cell": _cell(a.loading_cell),
+                "target_food_id": [int(x) for x in a.target_food_id],
+                "target_position": _cell(a.target_position),
+                "target_level": int(a.target_level),
+            }
+            for a in response.assignments
+        ]
+    return payload
 
 
 def response_from_dict(payload, *, event_id, target_food_id):
@@ -243,7 +291,29 @@ def response_from_dict(payload, *, event_id, target_food_id):
     physical constraint** -- so a stale or tampered plan fails closed rather
     than activating.
     """
-    from selma.provider import Assignment, GuidanceResponse
+    from selma.provider import (
+        Assignment,
+        GuidanceResponse,
+        TargetGuidanceAssignment,
+    )
+
+    def assignment_from_payload(item):
+        common = {
+            "agent_id": int(item["agent_id"]),
+            "role": str(item["role"]),
+            "loading_cell": tuple(int(x) for x in item["loading_cell"]),
+        }
+        if not item.get("target_position"):
+            return Assignment(**common)
+        position = tuple(int(x) for x in item["target_position"])
+        return TargetGuidanceAssignment(
+            **common,
+            # V2 food identity is episode-scoped. Rebind it from the current
+            # request's episode plus the cached absolute position.
+            target_food_id=(int(target_food_id[0]), position[0], position[1]),
+            target_position=position,
+            target_level=int(item.get("target_level", 0)),
+        )
 
     return GuidanceResponse(
         schema_version=payload["schema_version"],
@@ -252,11 +322,8 @@ def response_from_dict(payload, *, event_id, target_food_id):
         target_food_id=tuple(int(x) for x in target_food_id),
         helper_coalition=tuple(int(a) for a in payload["helper_coalition"]),
         selected_plan_id=str(payload["selected_plan_id"]),
-        assignments=tuple(
-            Assignment(agent_id=int(a["agent_id"]), role=str(a["role"]),
-                       loading_cell=tuple(int(x) for x in a["loading_cell"]))
-            for a in payload["assignments"]
-        ),
+        assignments=tuple(assignment_from_payload(a)
+                          for a in payload["assignments"]),
         confidence=float(payload["confidence"]),
     )
 

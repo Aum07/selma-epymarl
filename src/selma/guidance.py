@@ -7,8 +7,9 @@ Frozen decisions applied here (contract 6.2):
 
 * advice TTL = 15 transitions, ending earlier on target removal, terminal
   transition or replacement;
-* ``d_i`` = Manhattan distance from agent ``i`` to the target-food coordinate,
-  plus 1 while the food exists (the LOAD action allowance);
+* V1 ``d_i`` = Manhattan distance from agent ``i`` to the detector target;
+  V2 ``d_i`` = distance to that agent's provider-selected target food;
+  both add 1 while the relevant food exists (the LOAD action allowance);
 * ``d_max_plus_load = (rows - 1) + (cols - 1) + 1``;
 * ``Phi_t = mean(phi_i)`` over active recipients, ``0`` when no guidance is active.
 
@@ -62,6 +63,14 @@ from typing import NamedTuple, Tuple
 
 #: Advice lifetime: the guidance may be ``guidance_before`` for at most exactly
 #: this many environment transitions, and must not influence the (L+1)-th.
+#:
+#: This is the DEFAULT, frozen for 8x8 where ``d_max_plus_load`` is also 15, so
+#: an agent could always reach any assigned target before its advice expired.
+#: On a larger grid that coincidence breaks: 10x10 has d_max 19 and 15x15 has
+#: 29, so a target further away than the TTL loses its guidance mid-journey,
+#: every time, and the shaping pulls agents part of the way and then vanishes.
+#: ``selma_ttl_steps`` therefore exists so the lifetime can be scaled with the
+#: map instead of silently under-serving it.
 TTL_STEPS = 15
 
 #: Tolerance for the phi_after(t) == phi_before(t+1) runtime invariant. The two
@@ -91,11 +100,14 @@ class ActiveGuidance:
 
     __slots__ = ("event_id", "subgoal_id", "food_id", "food_position", "recipients",
                  "assignments", "activated_step", "provider_id", "transitions_served",
-                 "trigger_agent_ids", "selected_plan_id")
+                 "trigger_agent_ids", "selected_plan_id", "guidance_contract",
+                 "target_food_ids", "target_positions", "ttl_steps")
 
     def __init__(self, event_id, subgoal_id, food_id, food_position, recipients,
                  assignments, activated_step, provider_id, trigger_agent_ids=(),
-                 selected_plan_id=""):
+                 selected_plan_id="", guidance_contract="v1_loading_cell",
+                 target_food_ids=None, target_positions=None,
+                 ttl_steps=TTL_STEPS):
         self.event_id = event_id
         self.subgoal_id = subgoal_id
         self.food_id = tuple(food_id)
@@ -107,6 +119,21 @@ class ActiveGuidance:
         self.trigger_agent_ids = tuple(int(a) for a in trigger_agent_ids)
         #: Which code-built joint plan the provider selected.
         self.selected_plan_id = str(selected_plan_id or "")
+        self.guidance_contract = str(guidance_contract)
+        self.target_food_ids = {
+            int(a): tuple(food_id)
+            for a, food_id in (target_food_ids or {}).items()
+        }
+        self.target_positions = {
+            int(a): tuple(position)
+            for a, position in (target_positions or {}).items()
+        }
+        #: Advice lifetime for THIS guidance, in transitions.
+        self.ttl_steps = int(ttl_steps)
+        if self.ttl_steps < 1:
+            raise ValueError(
+                "ttl_steps={!r} must be >= 1; a guidance that serves no "
+                "transition could never influence an action.".format(ttl_steps))
         #: Transitions for which this guidance has been ``guidance_before``.
         self.transitions_served = 0
 
@@ -115,7 +142,7 @@ class ActiveGuidance:
 
     def ttl_exhausted(self):
         """True once it has served its full budget of guided transitions."""
-        return self.transitions_served >= TTL_STEPS
+        return self.transitions_served >= self.ttl_steps
 
 
 def phi_components(guidance, agent_positions, food_positions, grid_shape):
@@ -127,14 +154,27 @@ def phi_components(guidance, agent_positions, food_positions, grid_shape):
     if guidance is None:
         return {}
     dmax = d_max_plus_load(grid_shape)
-    food_exists = tuple(guidance.food_position) in {tuple(p) for p in (food_positions or ())}
+    remaining = {tuple(p) for p in (food_positions or ())}
+    food_exists = tuple(guidance.food_position) in remaining
     out = {}
     for a in guidance.recipients:
         pos = (agent_positions or {}).get(a)
         if pos is None:
             continue
-        d = abs(int(pos[0]) - guidance.food_position[0]) + abs(int(pos[1]) - guidance.food_position[1])
-        if food_exists:
+        if guidance.guidance_contract == "v2_target_allocation":
+            target = guidance.target_positions.get(a)
+            if target is None:
+                # FAIL CLOSED. Skipping this agent would shape over the
+                # remaining recipients -- a different quantity, silently. A
+                # guidance missing a target for a required recipient yields no
+                # components at all, hence Phi = 0 and F_t = 0.
+                return {}
+            target_exists = tuple(target) in remaining
+        else:
+            target = guidance.food_position
+            target_exists = food_exists
+        d = abs(int(pos[0]) - target[0]) + abs(int(pos[1]) - target[1])
+        if target_exists:
             d += 1  # the terminal LOAD action
         out[a] = -float(d) / float(dmax)
     return out
@@ -266,6 +306,8 @@ class TransitionRecord(NamedTuple):
     decisions: Tuple[DecisionRecord, ...] = ()
     #: Coalesced detector events seen on this transition, before eligibility.
     detector_events: int = 0
+    #: Stable V2 evidence: ``agent=row,col`` pairs from the selected plan.
+    target_assignments: str = ""
 
 
 class GuidanceController:
@@ -276,8 +318,15 @@ class GuidanceController:
     """
 
     def __init__(self, provider, grid_shape, beta, gamma, enabled, variant_id,
-                 accounting=None):
+                 accounting=None, guidance_contract="v1_loading_cell",
+                 ttl_steps=TTL_STEPS):
         self.provider = provider
+        #: Advice lifetime in transitions. Defaults to the frozen 15; must be
+        #: raised on grids where d_max exceeds it or guidance expires before an
+        #: agent can reach an assigned target.
+        self.ttl_steps = int(ttl_steps)
+        if self.ttl_steps < 1:
+            raise ValueError("ttl_steps={!r} must be >= 1".format(ttl_steps))
         #: Optional Stage D accounting (selma.accounting.SelmaAccounting).
         #: ``None`` keeps the Stage C behaviour exactly: nothing is recorded and
         #: no code path below changes.
@@ -288,6 +337,7 @@ class GuidanceController:
         self.enabled = bool(enabled)
         #: Only events of this frozen detector variant may be offered.
         self.variant_id = str(variant_id)
+        self.guidance_contract = str(guidance_contract)
         self.active = None
         # counters (reconciled against the runner's own tallies)
         self.query_count = 0
@@ -345,9 +395,15 @@ class GuidanceController:
             return ""
         if stored_terminated:
             reason = EXPIRY_TERMINAL
-        elif tuple(self.active.food_position) not in {
-            tuple(p) for p in (food_positions or ())
-        }:
+        elif self.active.guidance_contract == "v2_target_allocation" and any(
+            tuple(position) not in {tuple(p) for p in (food_positions or ())}
+            for position in self.active.target_positions.values()
+        ):
+            reason = EXPIRY_TARGET_REMOVED
+        elif (self.active.guidance_contract != "v2_target_allocation"
+              and tuple(self.active.food_position) not in {
+                  tuple(p) for p in (food_positions or ())
+              }):
             reason = EXPIRY_TARGET_REMOVED
         elif self.active.ttl_exhausted():
             reason = EXPIRY_TTL
@@ -358,7 +414,8 @@ class GuidanceController:
         self.expiry_reasons[reason] = self.expiry_reasons.get(reason, 0) + 1
         return reason
 
-    def _offer(self, event_rows, agent_positions, step):
+    def _offer(self, event_rows, agent_positions, step, *, agent_levels=None,
+               remaining_foods=None):
         """Query the provider for eligible events; activate on a valid response.
 
         Returns ``(queried, activated, provider_valid, fallback_reason)``. A
@@ -404,7 +461,10 @@ class GuidanceController:
             event_id = str(row.get("event_id", ""))
             try:
                 request = build_request(row, agent_positions=agent_positions,
-                                        grid_shape=self.grid_shape)
+                                        grid_shape=self.grid_shape,
+                                        guidance_contract=self.guidance_contract,
+                                        agent_levels=agent_levels,
+                                        remaining_foods=remaining_foods)
             except MissingAgentPositionError:
                 # Documented rejection: no provider call, no guidance, F_t = 0.
                 # No request was built, so this is *not* a considered request
@@ -464,6 +524,16 @@ class GuidanceController:
             provider_valid = 1
             assignments = {a.agent_id: (a.role, tuple(a.loading_cell))
                            for a in verdict.response.assignments}
+            target_food_ids = {
+                a.agent_id: tuple(a.target_food_id)
+                for a in verdict.response.assignments
+                if getattr(a, "target_food_id", ())
+            }
+            target_positions = {
+                a.agent_id: tuple(a.target_position)
+                for a in verdict.response.assignments
+                if getattr(a, "target_position", ())
+            }
             if self.active is not None:
                 self.replacement_count += 1
                 self.last_transition = TRANSITION_REPLACEMENT
@@ -482,6 +552,10 @@ class GuidanceController:
                 provider_id=getattr(self.provider, "provider_id", "unknown"),
                 trigger_agent_ids=row.get("trigger_agent_ids", ()) or (),
                 selected_plan_id=getattr(verdict.response, "selected_plan_id", ""),
+                guidance_contract=self.guidance_contract,
+                target_food_ids=target_food_ids,
+                target_positions=target_positions,
+                ttl_steps=self.ttl_steps,
             )
             activated += 1
             if self.accounting is not None:
@@ -541,7 +615,8 @@ class GuidanceController:
 
     def apply_transition(self, *, step, raw_team_reward, phi_before,
                          post_agent_positions, post_food_positions, event_rows,
-                         episode_ended, stored_terminated, terminal_cause=""):
+                         episode_ended, stored_terminated, terminal_cause="",
+                         post_agent_levels=None, post_food_snapshots=None):
         """Advance the guidance boundary and price transition ``t``.
 
         ``phi_before`` is ``Phi(s_t, g_t)`` -- for ``t > 0`` it is the previous
@@ -586,7 +661,9 @@ class GuidanceController:
                 self.accounting.terminal_suppressed_event_count += suppressed
         else:
             queried, activated, provider_valid, fallback, decisions = self._offer(
-                event_rows, post_agent_positions, step
+                event_rows, post_agent_positions, step,
+                agent_levels=post_agent_levels,
+                remaining_foods=post_food_snapshots,
             )
 
         if activated:
@@ -615,6 +692,12 @@ class GuidanceController:
         self.total_shaping_contribution += contribution
 
         guidance = self.active
+        target_assignments = (
+            ";".join(
+                "{}={},{}".format(agent_id, position[0], position[1])
+                for agent_id, position in sorted(guidance.target_positions.items())
+            ) if guidance is not None else ""
+        )
         return TransitionRecord(
             step=int(step),
             raw_team_reward=raw_team_reward,
@@ -647,6 +730,7 @@ class GuidanceController:
             terminal_cause=str(terminal_cause or ""),
             decisions=decisions,
             detector_events=detector_events,
+            target_assignments=target_assignments,
         )
 
     # -- reward -------------------------------------------------------------
@@ -827,7 +911,7 @@ class GuidanceCsvWriter(_CsvLogWriter):
         "t_env", "condition", "seed", "episode_id", "episode_step",
         "condition_checked", "query_triggered", "queries",
         "event_id", "subgoal_id", "trigger_agent_ids", "recipient_agent_ids",
-        "target_food_id", "selected_plan_id",
+        "target_food_id", "selected_plan_id", "target_assignments",
         "provider", "provider_valid", "fallback_reason",
         "guidance_active", "guidance_transition", "guidance_age",
         "transitions_served", "expiry_reason",
@@ -869,6 +953,7 @@ class GuidanceCsvWriter(_CsvLogWriter):
             "target_food_id": ";".join(str(x) for x in record.target_food_id)
             if record.target_food_id else "",
             "selected_plan_id": record.selected_plan_id,
+            "target_assignments": record.target_assignments,
             "provider": getattr(controller.provider, "provider_id", ""),
             "provider_valid": record.provider_valid,
             "fallback_reason": record.fallback_reason,

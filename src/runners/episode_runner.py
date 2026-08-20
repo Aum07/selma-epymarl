@@ -133,7 +133,8 @@ class EpisodeRunner:
                 GuidanceCsvWriter,
                 SelmaDecisionCsvWriter,
             )
-            from selma.provider_registry import is_live_provider, make_provider
+            from selma.provider_registry import (is_live_provider, make_provider,
+                                                 needs_run_seed)
 
             if self.selma_bank is None:
                 raise ValueError(
@@ -151,6 +152,8 @@ class EpisodeRunner:
             # selma_cache_mode='off' the gateway performs no lookup and the mock
             # makes no network call, so Stage C behaviour is unchanged.
             provider_kwargs = {}
+            if needs_run_seed(self.selma_config.provider):
+                provider_kwargs = {"run_seed": int(self.args.seed)}
             if is_live_provider(self.selma_config.provider):
                 provider_kwargs = {
                     "timeout": self.selma_config.provider_timeout_s,
@@ -172,6 +175,8 @@ class EpisodeRunner:
                 enabled=True,
                 variant_id=self.selma_config.variant_id,
                 accounting=self.selma_accounting,
+                guidance_contract=self.selma_config.guidance_contract,
+                ttl_steps=self.selma_config.ttl_steps,
             )
             if self.selma_config.guidance_log_csv:
                 self.selma_guidance_writer = GuidanceCsvWriter(
@@ -515,6 +520,11 @@ class EpisodeRunner:
                     episode_ended=bool(terminated),
                     stored_terminated=bool(stored_terminated),
                     terminal_cause=terminal_cause,
+                    post_agent_levels={
+                        int(a.agent_id): int(a.level)
+                        for a in selma_step_info.agents
+                    },
+                    post_food_snapshots=selma_step_info.post_foods,
                 )
                 reward = selma_record.training_reward
                 # The successor potential of this transition IS the predecessor
