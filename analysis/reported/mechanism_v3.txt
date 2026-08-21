@@ -1,0 +1,35 @@
+outdir: /home/aum/selma/v3/analysis/out/v3_10x10   d_max=19
+
+             runs   activ  >1 food   multi  single  medJ  p95J   meanPhi
+------------------------------------------------------------------------
+heuristic       6   27899     100%   27989   55387     3     8   -0.2237
+random          6   28432     100%   28520   55329     4    10   -0.2858
+llm             6   28573     100%   28681   56330     4    10   -0.2752
+
+--- realised potential at activation ---
+  heuristic (ceiling, min-travel) : -0.22373
+  random    (floor, uniform)      : -0.28584
+  llm                             : -0.27524
+
+  >>> LLM captures 17.1% of the heuristic-over-random range
+      (on 8x8 with the small lever this was ~3.5%)
+
+--- selected plan position vs CHANCE ---
+  answer sets vary in size, so chance for position 0 is E[1/n], not 1/6
+  heuristic  n=27989  pos0 observed  33.1%  chance  27.9%  ratio 1.19x   mean norm-rank 0.446
+             dist [(0, 9275), (1, 7888), (2, 5843), (3, 2682), (4, 1226), (5, 454), (6, 340), (7, 73)]
+  random     n=28520  pos0 observed  27.8%  chance  27.8%  ratio 1.00x   mean norm-rank 0.501
+             dist [(0, 7935), (1, 7911), (2, 6584), (3, 3258), (4, 1432), (5, 661), (6, 413), (7, 102)]
+  llm        n=28680  pos0 observed  33.1%  chance  27.8%  ratio 1.19x   mean norm-rank 0.431
+             dist [(0, 9491), (1, 7969), (2, 6148), (3, 2825), (4, 1119), (5, 515), (6, 312), (7, 86)]
+  8x8 reference: 59.3% observed vs 16.7% chance = 3.55x, norm-rank 0.24
+  ratio near 1.00 and norm-rank near 0.50 mean NO positional prior
+
+--- answer-set size ---
+  heuristic  [(2, 2687), (3, 9921), (4, 7010), (5, 4117), (6, 1041), (7, 2231), (8, 217), (9, 81), (11, 380), (12, 201), (15, 103)]
+  random     [(2, 2725), (3, 10016), (4, 7075), (5, 4198), (6, 1167), (7, 2359), (8, 224), (9, 76), (11, 396), (12, 182), (15, 102)]
+  llm        [(2, 2699), (3, 10133), (4, 7171), (5, 4087), (6, 1174), (7, 2456), (8, 225), (9, 90), (11, 370), (12, 176), (15, 100)]
+
+--- provider ---
+  live calls 28372   mean in 894 tok   mean out 26 tok
+  cost $5.9964   validator failures 1
