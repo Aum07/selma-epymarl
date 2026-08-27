@@ -86,13 +86,15 @@ architectures and the evaluation procedure are untouched. The single
 integration point is the addition of the shaping term to the team reward before
 it is written to the buffer.
 
-### Known issue
+### A corrected statistic
 
-`analysis/scripts/mechanism_v3.py` and `make_report.py` contain a parsing defect
-in the multi-target statistic: they split a composite food identifier on a
-delimiter that also appears inside its values. The cached output in
-`analysis/reported/` reflects it. The figures reported in the paper are
-recomputed from the recorded plan assignments and supersede that cached output.
+An earlier version of `analysis/scripts/mechanism_v3.py` and `make_report.py`
+counted distinct targets by splitting `target_food_id` on `;`. That field holds
+one food as an `(episode; row; column)` triple, so the count was three for every
+activation and the multi-target rate read 100 %. Both scripts now count distinct
+values of `target_assignments`, which is the field that carries the allocation.
+The corrected figures are the ones reported in the paper, and
+`analysis/reported/` reflects them.
 
 ## Branch map
 
