@@ -1,4 +1,4 @@
-# SELMA — Selective LLM-Guided Potential-Based Reward Shaping for Cooperative MARL
+# SELMA - Selective LLM-Guided Potential-Based Reward Shaping for Cooperative MARL
 
 MSc research project, School of Computer Science, University of Galway.
 Author: Aum Bhavesh Kanakiya. Supervisor: Dr Karl Mason.
