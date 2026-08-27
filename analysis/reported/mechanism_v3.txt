@@ -2,9 +2,16 @@ outdir: /home/aum/selma/v3/analysis/out/v3_10x10   d_max=19
 
              runs   activ  >1 food   multi  single  medJ  p95J   meanPhi
 ------------------------------------------------------------------------
-heuristic       6   27899     100%   27989   55387     3     8   -0.2237
-random          6   28432     100%   28520   55329     4    10   -0.2858
-llm             6   28573     100%   28681   56330     4    10   -0.2752
+heuristic       6   27899      63%   27989   55387     3     8   -0.2237
+random          6   28432      72%   28520   55329     4    10   -0.2858
+llm             6   28573      60%   28681   56330     4    10   -0.2752
+
+--- distinct targets in the selected plan ---
+  counted from target_assignments, over distinct (event, subgoal) pairs
+                 activ    1 tgt    2 tgt    3 tgt      >=2
+  heuristic      27899    37.2%    62.8%     0.0%    62.8%
+  random         28432    28.0%    71.5%     0.5%    72.0%
+  llm            28573    40.4%    59.2%     0.4%    59.6%
 
 --- realised potential at activation ---
   heuristic (ceiling, min-travel) : -0.22373

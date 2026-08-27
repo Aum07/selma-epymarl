@@ -52,7 +52,7 @@ def analyse(d):
     r = {"activations": 0, "spanmulti": 0, "journeys": [], "phi": [],
          "posn": collections.Counter(), "cand": collections.Counter(),
          "multi": 0, "singleton": 0, "calls": 0, "ti": 0, "to": 0,
-         "validfail": 0, "pairs": []}
+         "validfail": 0, "pairs": [], "tgtdist": collections.Counter()}
 
     if os.path.exists(g):
         seen = set()
@@ -65,9 +65,14 @@ def analyse(d):
                     continue
                 seen.add(key)
                 r["activations"] += 1
-                foods = lst(row.get("target_food_id"))
-                if foods and len(set(foods)) > 1:
+                # target_food_id holds ONE food as an (episode;row;col)
+                # triple, so splitting it on ";" counts 3 tokens for a single
+                # food. The allocation lives in target_assignments, which kv()
+                # parses as agent -> "row,col"; distinct VALUES are the targets.
+                targets = set(kv(row.get("target_assignments")).values())
+                if len(targets) > 1:
                     r["spanmulti"] += 1
+                r["tgtdist"][len(targets)] += 1
                 js = []
                 for v in kv(row.get("phi_components")).values():
                     try:
@@ -129,7 +134,8 @@ for cond in CONDS:
     tot = {"activations": 0, "spanmulti": 0, "journeys": [], "phi": [],
            "posn": collections.Counter(), "cand": collections.Counter(),
            "multi": 0, "singleton": 0, "calls": 0, "ti": 0, "to": 0,
-           "validfail": 0, "pairs": [], "runs": 0}
+           "validfail": 0, "pairs": [], "runs": 0,
+           "tgtdist": collections.Counter()}
     for d in sorted(glob.glob(os.path.join(OUT, f"{cond}_seed*"))):
         r = analyse(d)
         tot["runs"] += 1
@@ -141,6 +147,7 @@ for cond in CONDS:
         tot["posn"] += r["posn"]
         tot["cand"] += r["cand"]
         tot["pairs"] += r["pairs"]
+        tot["tgtdist"] += r["tgtdist"]
     agg[cond] = tot
 
 print(f"outdir: {OUT}   d_max={DMAX:g}\n")
@@ -158,6 +165,18 @@ for cond in CONDS:
     mphi = statistics.mean(t["phi"]) if t["phi"] else float("nan")
     print(f"{cond:<12}{t['runs']:>5}{t['activations']:>8}{span:>9}"
           f"{t['multi']:>8}{t['singleton']:>8}{medj:>6}{p95:>6}{mphi:>10.4f}")
+
+print("\n--- distinct targets in the selected plan ---")
+print("  counted from target_assignments, over distinct (event, subgoal) pairs")
+print(f"  {'':<12}{'activ':>8}{'1 tgt':>9}{'2 tgt':>9}{'3 tgt':>9}{'>=2':>9}")
+for cond in CONDS:
+    t = agg[cond]
+    n = sum(t["tgtdist"].values())
+    if not n:
+        continue
+    pc = lambda k: f"{100*t['tgtdist'][k]/n:.1f}%"
+    ge2 = 100 * sum(v for k, v in t["tgtdist"].items() if k >= 2) / n
+    print(f"  {cond:<12}{n:>8}{pc(1):>9}{pc(2):>9}{pc(3):>9}{ge2:>8.1f}%")
 
 # ---- the headline: how close does the model get to the potential ceiling? --
 h, rn, l = (statistics.mean(agg[c]["phi"]) if agg[c]["phi"] else None

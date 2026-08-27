@@ -226,8 +226,11 @@ for d in sorted(glob.glob(os.path.join(OUT, "llm_seed*"))):
                     continue
                 seen.add(k)
                 mech["activations"] += 1
-                fo = lst(r.get("target_food_id"))
-                if fo and len(set(fo)) > 1:
+                # target_food_id holds ONE food as an (episode;row;col)
+                # triple; the allocation is in target_assignments, which kv()
+                # parses as agent -> "row,col". Distinct values are the targets.
+                tg = set(kv(r.get("target_assignments")).values())
+                if len(tg) > 1:
                     mech["span_multi"] += 1
                 comps = []
                 for v in kv(r.get("phi_components")).values():

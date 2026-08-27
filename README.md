@@ -1,144 +1,158 @@
-# SELMA: Selective LLM-Guided Potential-Based Reward Shaping for Cooperative MARL
+# SELMA
+
+**Selective LLM-Guided Potential-Based Reward Shaping for Cooperative Multi-Agent Reinforcement Learning.**
+
+A language model is placed at one narrow point in a cooperative MARL loop. A
+fixed detector fires when the team is repeatedly failing to complete a
+collection. Code, not the model, enumerates every joint plan feasible under the
+task's level constraints. The model returns one plan identifier, and that choice
+determines only *which valid potential* a dynamic potential-based shaping term
+is built from. The model cannot generate a plan, act, or change the form of the
+reward, so the policy-invariance guarantee holds whatever it selects.
+
+Built on [EPyMARL](https://github.com/uoe-agents/epymarl). Environment is
+Level-Based Foraging, learner is QMIX, both unmodified.
 
 MSc research project, School of Computer Science, University of Galway.
 Author: Aum Bhavesh Kanakiya. Supervisor: Dr Karl Mason.
 
-This repository is a fork of [EPyMARL](https://github.com/uoe-agents/epymarl),
-itself an extension of [PyMARL](https://github.com/oxwhirl/pymarl). Commits
-dated before July 2026 belong to those projects and were inherited with the
-fork. The upstream framework's own documentation is preserved in
-[`README_EPYMARL.md`](README_EPYMARL.md); everything below concerns the SELMA
-addition.
+---
 
-## What SELMA is
-
-SELMA places a language model at a deliberately narrow point in a cooperative
-multi-agent reinforcement learning loop. A fixed detector fires when the team is
-repeatedly failing to complete a collection. **Code, not the model**, then
-enumerates every joint plan feasible under the task's level constraints. The
-model returns one plan identifier from that set, and the selection determines
-only *which valid potential* a dynamic potential-based shaping term is built
-from.
-
-The model cannot generate a plan, cannot act, and cannot alter the form of the
-reward, so the policy-invariance guarantee of dynamic PBRS holds whatever it
-chooses. The environment is Level-Based Foraging and the learner is QMIX, both
-unmodified.
-
-## What the paper reports
+## Result
 
 **No guided condition improved on unmodified QMIX**, on either layout tested.
-The contribution is not a performance result. It is a set of measurements on the
-guidance pathway itself:
+The contribution is a set of measurements on the guidance pathway rather than a
+performance gain:
 
-- A **plan-conditionality assertion**: the fraction of decisions on which at
-  least two offered plans induce different shaping terms. The first
-  implementation returned **0.00 %** over 20,574 cached decisions, meaning the
-  model's answer changed the reward on none of them, while strict output
-  validation, physical-realisability checks, an exact telescoping test, a
-  reconciled reward ledger and a green test suite all passed. The corrected
-  potential returns **93.27 %** on the same decisions.
-- **Coverage**: guidance was active on 2.2 % of 15,000,186 training transitions.
-- **Magnitude**: over the shaped transitions the median term carried 0.24 % of
-  the smallest positive environment reward and the 99th percentile 27 %, with
-  the large values arising from guidance switching on and off rather than from
-  progress toward the assigned target.
+| measurement | value |
+|---|---|
+| plan-conditionality of the first implementation | **0.00 %** over 20,574 decisions |
+| plan-conditionality after correcting the potential | **93.27 %** on the same decisions |
+| transitions with guidance active | **2.2 %** of 15,000,186 |
+| median shaping term, against the smallest positive environment reward | **0.24 %** |
+| 99th percentile | **27 %**, arising from guidance switching on and off |
+
+The first row is the finding the rest follows from. The original potential was
+computed from a quantity the model's answer did not determine, so varying the
+answer changed the reward on none of the 20,574 decisions, while strict output
+validation, physical-realisability checks, an exact telescoping test, a
+reconciled reward ledger and a green test suite all passed.
 
 No statistical significance is claimed at these seed counts, and nothing
 generalises beyond LBF, QMIX and the tested model snapshot.
 
-## The state the paper reports
+---
 
-Branch **`selma-v3`**, commit **`0c58711`**, tagged **`paper-2026-08`**. The
-experiments themselves ran at **`1ac4961`**, from which `0c58711` descends
-without any change to training code.
+## Install
 
-Note that `1ac4961`'s commit message mentions a time-to-live of 20. That was a
-launcher default which the launch overrode. Every guided run recorded
-`selma_ttl_steps: 13`, and the run configurations are the authority.
+Python 3.10. From a clean virtual environment:
 
-## Where things are
+```bash
+git clone https://github.com/Aum07/selma-epymarl.git
+cd selma-epymarl
+git checkout selma-v3
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+pip install -r selma_requirements.txt
+```
+
+`requirements-lock.txt` pins the exact environment the reported runs used
+(PyTorch 2.12.1, NumPy 1.26.4, Gymnasium 1.3.0) if you need to reproduce them
+bit for bit.
+
+Guided runs call the OpenAI API:
+
+```bash
+export OPENAI_API_KEY=...
+```
+
+The baseline condition needs no key.
+
+## Run
+
+The primary experiment, four conditions across six seeds on
+`Foraging-10x10-3p-3f-v3`:
+
+```bash
+./run_v3_10x10.sh
+```
+
+Read the script before launching. It dispatches 24 runs of 2.5M steps each and
+the three guided conditions issue roughly 4,700 live API calls per run, about
+$1 per run at the prices in `src/selma/pricing.py`.
+
+Each run writes four logs to its output directory: the EPyMARL training log, a
+per-step transition log carrying the guidance state and shaping term, a decision
+log with one row per detector event, and a guidance log with one row per
+activation. Every number in the paper comes from these after the fact, with no
+additional training.
+
+## Reproduce the reported numbers
+
+```bash
+python3 analysis/scripts/analyse_v3.py     # learning curves, AUC, per-seed values
+python3 analysis/scripts/mechanism_v3.py   # detector, selection and shaping diagnostics
+```
+
+Both default to `~/selma/v3/analysis/out/v3_10x10`; pass a different output
+directory as the first argument. Their exact output for the reported runs is
+committed in `analysis/reported/`, so you can diff against it.
+
+`analysis/scripts/make_report.py OUTDIR TMAX DMAX REPORTDIR` runs everything and
+assembles the figures, tables and a summary in one folder.
+
+The raw per-seed logs are too large for version control and are available from
+the author on request.
+
+---
+
+## Layout
 
 | path | contents |
 |---|---|
-| `src/selma/` | the mechanism: detector, plan enumeration, LLM interface, potential and shaping term |
-| `src/selma/detector.py` | struggle detector: per-agent failed-load window, team no-progress gate, inbound suppression, cooldown, rearm, per-episode cap |
-| `src/selma/guidance.py` | the potential, the shaping term, guidance lifetime and expiry |
-| `src/selma/target_plans.py` | Contract B enumeration and plan identifiers |
+| `src/selma/detector.py` | struggle detector: failed-load window, team no-progress gate, inbound suppression, cooldown, rearm, per-episode cap |
+| `src/selma/target_plans.py` | feasible joint-plan enumeration and plan identifiers |
 | `src/selma/openai_provider.py` | prompt construction and the strict JSON-schema output contract |
-| `src/selma/offline_selectors.py` | the random and potential-maximising control selectors |
-| `tests/` | test suite for the above |
+| `src/selma/offline_selectors.py` | random and potential-maximising control selectors |
+| `src/selma/guidance.py` | the potential, the shaping term, guidance lifetime and expiry |
+| `src/selma/` (rest) | caching, cost accounting, logging, types |
+| `tests/` | test suite |
 | `analysis/scripts/` | every script that computes a reported statistic or renders a figure |
-| `analysis/reported/` | the exact output of those scripts for the runs in the paper |
+| `analysis/reported/` | their exact output for the runs in the paper |
 | `docs/project/` | stage-by-stage design and acceptance records |
-| `run_v3_10x10.sh` | launcher for the primary experiment |
 
-The raw per-seed decision, guidance and evaluation logs are too large for
-version control and are available from the author on request.
-
-### Scope of the change to EPyMARL
-
-SELMA is additive. Across the whole fork it modifies five upstream code files
-(`src/config/default.yaml`, `src/envs/__init__.py`, `src/envs/gymma.py`,
-`src/runners/episode_runner.py`, `src/utils/logging.py`) and deletes eleven
-lines of upstream code in total. QMIX, the replay buffer, the network
-architectures and the evaluation procedure are untouched. The single
+**Scope of the change to EPyMARL.** SELMA is additive. It modifies five upstream
+code files (`src/config/default.yaml`, `src/envs/__init__.py`,
+`src/envs/gymma.py`, `src/runners/episode_runner.py`, `src/utils/logging.py`)
+and deletes eleven lines of upstream code in total. QMIX, the replay buffer, the
+network architectures and the evaluation procedure are untouched. The single
 integration point is the addition of the shaping term to the team reward before
 it is written to the buffer.
 
-### A corrected statistic
+## Versions
 
-An earlier version of `analysis/scripts/mechanism_v3.py` and `make_report.py`
-counted distinct targets by splitting `target_food_id` on `;`. That field holds
-one food as an `(episode; row; column)` triple, so the count was three for every
-activation and the multi-target rate read 100 %. Both scripts now count distinct
-values of `target_assignments`, which is the field that carries the allocation.
-The corrected figures are the ones reported in the paper, and
-`analysis/reported/` reflects them.
+The state reported in the paper is tag **`paper-2026-08`** (commit `0c58711`).
+The experiments ran at `1ac4961`, from which it descends without any change to
+training code.
 
-## Branch map
+Two notes for anyone comparing the repository against the paper. `1ac4961`'s
+commit message mentions a time-to-live of 20; that was a launcher default the
+launch overrode, and every guided run recorded `selma_ttl_steps: 13`. And the
+paper's Availability section describes a defective multi-target parse in the
+analysis scripts; it was present at `0c58711` and has since been corrected, with
+`analysis/reported/` regenerated.
 
-The project was built in stages and the branches are bookmarks left at the end
-of each one. **Branch names describe the work that produced the commit, not
-necessarily the state of the code at its tip**, and several bookmarks sit on the
-same commit. Only `selma-v3` is live.
+Branch names describe the work that produced a commit rather than the state of
+the code at its tip, and several are bookmarks left on the same commit. **Only
+`selma-v3` is live.** `main` is unmodified upstream EPyMARL. The remaining
+branches are historical: `selma-v3-target-allocation`,
+`v2-plan-conditioned-potential`, `stage-c-mock-pbrs`, `stage-d-*`, `stage-e-*`,
+`audit/selma-ultracode-20260818`, `feat/exact-load-counter`.
 
-| branch | tip date | status |
-|---|---|---|
-| `selma-v3` | 2026-08-27 | **live**. The state reported in the paper is `0c58711`, tagged `paper-2026-08`. Later commits add figure scripts and this README. |
-| `selma-v3-target-allocation` | 2026-08-20 | historical. Development of the Contract B enumeration. Its tip commit is titled "V2 plan-conditional potential". |
-| `v2-plan-conditioned-potential` | 2026-08-18 | historical. Points at `f7327f8`, the end of the Stage E work, together with the two branches below. |
-| `audit/selma-ultracode-20260818` | 2026-08-18 | historical. Independent audit pass over the implementation. Also at `f7327f8`. |
-| `stage-e-beta-recalibration-runs` | 2026-08-18 | historical. Also at `f7327f8`. |
-| `stage-e-beta-recalibration-design` | 2026-08-17 | historical. Revised shaping-scale calibration design. |
-| `stage-e-beta-calibration` | 2026-08-17 | historical. First shaping-scale calibration. |
-| `stage-d-beta-zero-measurement` | 2026-08-17 | historical. Unshaped control measurement. |
-| `stage-d-joint-plans` | 2026-08-17 | historical. Joint-plan enumeration and validation. |
-| `stage-d-live-pilot` | 2026-08-17 | historical. First live provider runs. |
-| `stage-d-provider-cache` | 2026-08-16 | historical. Response caching and cost accounting. |
-| `stage-c-mock-pbrs` | 2026-08-16 | historical. Deterministic PBRS integration into the runner. |
-| `feat/exact-load-counter` | 2026-07-30 | historical. Exact LBF load-event counter. |
-| `main` | inherited | unmodified upstream EPyMARL. Contains no SELMA. |
+The tags `v.1.0.0` and `v2.0.0` belong to upstream EPyMARL and are not SELMA
+versions.
 
-The tags `v.1.0.0` and `v2.0.0` belong to upstream EPyMARL and are **not** SELMA
-versions. The only SELMA tag is `paper-2026-08`.
-
-## How the work proceeded
-
-1. **Instrumentation** (July). Per-agent reward vectors, validated episode
-   returns and per-step reward participation logged, so that coverage and
-   shaping mass could later be measured at all.
-2. **Cooperation measurement** (late July). An exact LBF load-event counter, and
-   an event-based struggle detector run in **shadow mode**: firing and logging
-   events while changing nothing, so the trigger could be characterised before
-   it was allowed to affect a reward.
-3. **Detector freeze** (early August). Configuration `wf15_m3_t5_ibon` fixed and
-   held constant for every subsequent comparison.
-4. **Pathway construction** (mid August). PBRS integration with a deterministic
-   telescoping test, then the provider cache, the live provider contract, joint
-   plan validation, the unshaped control, and shaping-scale calibration.
-5. **Contract B and the paper** (late August). Target allocation across foods,
-   the primary experiment, then the analysis scripts and reported statistics.
+---
 
 ## Use of AI
 
@@ -152,8 +166,15 @@ decisions, the analysis rules, the interpretation of the results and the
 decision to report the negative finding prominently are the author's, who takes
 full responsibility for the content of this work.
 
-## Licence
+## Licence and attribution
+
+This repository is a fork of [EPyMARL](https://github.com/uoe-agents/epymarl),
+itself an extension of [PyMARL](https://github.com/oxwhirl/pymarl). Commits
+dated before July 2026 belong to those projects and were inherited with the
+fork. Upstream's documentation is preserved in
+[`README_EPYMARL.md`](README_EPYMARL.md).
 
 SELMA inherits EPyMARL's licence; see [`LICENSE`](LICENSE) and
-[`NOTICE`](NOTICE). Please cite EPyMARL (Papoudakis et al., NeurIPS Datasets and
-Benchmarks Track, 2021) if you use the underlying framework.
+[`NOTICE`](NOTICE). If you use the underlying framework, please cite Papoudakis
+et al., *Benchmarking Multi-Agent Deep Reinforcement Learning Algorithms in
+Cooperative Tasks*, NeurIPS Datasets and Benchmarks Track, 2021.
