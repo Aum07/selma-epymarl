@@ -30,8 +30,8 @@ guidance pathway itself:
 
 - A **plan-conditionality assertion**: the fraction of decisions on which at
   least two offered plans induce different shaping terms. The first
-  implementation returned **0.00 %** over 20,574 cached decisions — the model's
-  answer changed the reward on none of them — while strict output validation,
+  implementation returned **0.00 %** over 20,574 cached decisions -the model's
+  answer changed the reward on none of them -while strict output validation,
   physical-realisability checks, an exact telescoping test, a reconciled reward
   ledger and a green test suite all passed. The corrected potential returns
   **93.27 %** on the same decisions.
@@ -55,7 +55,7 @@ code.
 | path | contents |
 |---|---|
 | `src/selma/` | the mechanism: detector, plan enumeration, LLM interface, potential and shaping term |
-| `src/selma/detector.py` | struggle detector — per-agent failed-load window, team no-progress gate, inbound suppression, cooldown, rearm, per-episode cap |
+| `src/selma/detector.py` | struggle detector -per-agent failed-load window, team no-progress gate, inbound suppression, cooldown, rearm, per-episode cap |
 | `src/selma/guidance.py` | the potential Φ, the shaping term, guidance lifetime and expiry |
 | `src/selma/target_plans.py` | Contract B enumeration and plan identifiers |
 | `src/selma/openai_provider.py` | prompt construction and the strict JSON-schema output contract |
@@ -83,7 +83,7 @@ The project was built in stages and the branches record them.
 
 | branch | stage |
 |---|---|
-| `selma-v3` | **current — the state reported in the paper** (Contract B, target allocation) |
+| `selma-v3` | **current -the state reported in the paper** (Contract B, target allocation) |
 | `selma-v3-target-allocation` | development of the Contract B enumeration |
 | `v2-plan-conditioned-potential` | the corrected, plan-conditioned potential |
 | `stage-c-mock-pbrs` | deterministic PBRS integration into the EPyMARL runner |
