@@ -257,3 +257,5 @@ analysis/out/smoke/
 
 analysis/out/
 analysis/out/
+analysis/out/stage_b_paper_metrics/figures/*.png
+analysis/out/stage_b_paper_metrics/figures/*.svg
